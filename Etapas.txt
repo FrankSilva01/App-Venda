@@ -1,0 +1,43 @@
+**********************************PRÓXIMAS ETAPAS********************************
+
+****criar um componente para compras de cada categoria, como por exemplo uma para bebidas, outra para comidas e etc 
+para puxar do banco de daods e ser exibido pelo select selecionado**** ----Feito----
+
+criar botoes para cadicionar ao carrinho
+
+implementar uma nova rota para pegar do banco de dados somente os itens correspondentes 
+de uma determinada categoria, como bebidas alcolicas puxar somente as bebidas alcolicas
+
+colocar no componente minhas compras os itens clicados pelo select no botao adicionar ao carrinho
+
+Permitir que o usuario possa fazer alteração no pedido ou acrescentar um campo que possa colocar
+observações como por exemplo um lanche sem alface ou tomate.
+
+
+//AREA ADMINISTRATIVA
+Exibir no componente histórico de pedidos os pedidos feitos pela página minhas compras com todas
+as edições feitas pelo cliente
+
+Adicionar uma maneira de colocar se o pedido esta sendo preparado e alterar para pronto quando
+estiver pronto para o cliente acompanhar.
+
+
+Implementar na área de todos os produtos a função de edição no botão editar nos produtos em estoque.
+
+//BANCO DE DADOS - PÁGINA DE LOGIN
+
+Implementar uma forma de fazer distinção dos itens Maiusculos e minusculos digitados no campo de login
+e senha na área de se logar para evitar quebra de segurança
+
+Informar ao usuario quando for cadastrar que a aquele usuario já existe caso já exista, login, CPF e Email
+
+
+// FEITO HOJE 22/05
+
+Implementação da página de cadastro totalmente função com validação se os campos digitados correpsonde
+ao cadastro no banco de dados
+
+Implementação da página de login com validação de dados na área de login e senha, *PRECISO FAZER
+UMA VALIDAÇÃO DE LETRAS MAISUCULAS E MINUSCULAS NO CAMPO DE LOGIN E SENHA*
+
+INCLUI O CARREGAMENTO DOS PRODUTOS CADASTRADOS NO BANCO DE DADOS NO SELECT SELECIONADO E A PÁGINA DE BEBIDAS
