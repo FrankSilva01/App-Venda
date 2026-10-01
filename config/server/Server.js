@@ -9,6 +9,8 @@ const express = require('express');
 const path = require('path');
 const cors = require('cors');
 
+const bcrypt = require('bcryptjs');
+
 const { query } = require('./dbConnection');
 const upload = require('../MulterConfig');
 
@@ -73,15 +75,34 @@ app.delete('/produtos/:idnomeProduto', async (req, res) => {
 });
 
 // ---------------------------------------------------------------- usuarios
+// Custo 10: ~100 ms por verificacao nesta maquina. E lento DE PROPOSITO -- e o
+// que torna caro testar milhoes de senhas se o banco vazar. Subir o numero dobra
+// o tempo a cada ponto.
+const CUSTO_BCRYPT = 10;
+
+// Hash DE VERDADE, de uma senha aleatoria que ninguem conhece, so para o login
+// de usuario inexistente gastar o mesmo tempo do que existe.
+//
+// A primeira tentativa usou uma string inventada no formato do bcrypt. Nao
+// funcionou: hash malformado e recusado na hora, sem calcular nada, e a medicao
+// mostrou 7 ms contra 60 ms -- ou seja, o tempo de resposta continuava dizendo
+// quais logins existem. So um hash valido obriga o bcrypt a fazer o trabalho.
+const HASH_FALSO = bcrypt.hashSync(
+  Math.random().toString(36) + Date.now(), CUSTO_BCRYPT);
+
 app.post('/api/cadastrarUsuario', async (req, res) => {
   const { login, email, senha, cpf } = req.body;
   if (!login || !email || !senha || !cpf) {
     return res.status(400).json({ message: 'Todos os campos devem ser preenchidos.' });
   }
+  if (String(senha).length < 6) {
+    return res.status(400).json({ message: 'A senha precisa de ao menos 6 caracteres.' });
+  }
   try {
+    const hash = await bcrypt.hash(String(senha), CUSTO_BCRYPT);
     const r = await query(
       'INSERT INTO usuarios (login, email, senha, cpf) VALUES ($1, $2, $3, $4) RETURNING id',
-      [login, email, senha, cpf]
+      [login, email, hash, cpf]
     );
     res.status(201).json({ id: r.rows[0].id });
   } catch (e) {
@@ -94,19 +115,36 @@ app.post('/api/cadastrarUsuario', async (req, res) => {
   }
 });
 
-app.get('/api/usuarios', async (req, res) => {
-  const { login, senha } = req.query;
-  if (!login || !senha) return res.status(400).json({ error: 'Informe login e senha.' });
+// POST e nao GET: a senha ia na QUERYSTRING, e querystring fica no historico do
+// navegador, no Referer e no log de qualquer proxy pelo caminho. No corpo, nao.
+app.post('/api/login', async (req, res) => {
+  const { login, senha } = req.body || {};
+  if (!login || !senha) return res.status(400).json({ message: 'Informe login e senha.' });
   try {
-    // Sem SELECT *: a senha nao volta na resposta, nem para quem acertou.
     const r = await query(
-      'SELECT id, login, email, cpf FROM usuarios WHERE login = $1 AND senha = $2',
-      [login, senha]
+      'SELECT id, login, email, cpf, senha FROM usuarios WHERE login = $1',
+      [login]
     );
-    res.json(r.rows);
+    const u = r.rows[0];
+    // bcrypt.compare mesmo sem usuario: responder na hora quando o login nao
+    // existe revela QUAIS logins existem, pelo tempo da resposta.
+    const confere = await bcrypt.compare(String(senha), u ? u.senha : HASH_FALSO);
+    if (!u || !confere) {
+      // Uma mensagem so para os dois casos, pela mesma razao.
+      return res.status(401).json({ message: 'Login ou senha não conferem.' });
+    }
+    res.json({ id: u.id, login: u.login, email: u.email, cpf: u.cpf });
   } catch (e) {
     erro(res, e, 'Erro ao verificar os dados de login');
   }
+});
+
+// A rota antiga recebia a senha pela URL. Fica avisando, para quem tiver codigo
+// velho apontando para ela descobrir o porque em vez de ver um 404 silencioso.
+app.get('/api/usuarios', (req, res) => {
+  res.status(410).json({
+    message: 'Removida: a senha ia na URL. Use POST /api/login com login e senha no corpo.'
+  });
 });
 
 // Para saber se a API esta de pe sem precisar de banco com dado dentro.

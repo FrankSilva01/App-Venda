@@ -25,10 +25,9 @@ CREATE TABLE IF NOT EXISTS usuarios (
     login     TEXT UNIQUE NOT NULL,
     email     TEXT UNIQUE NOT NULL,
     cpf       TEXT UNIQUE NOT NULL,
-    -- ATENCAO: hoje o app grava a senha em texto puro. As restricoes UNIQUE acima
-    -- resolvem um item do Etapas.txt ("informar que o usuario ja existe"), mas a
-    -- senha continua como estava. Trocar por hash (bcrypt) muda o cadastro e o
-    -- login juntos -- ver o README.
+    -- Guarda o HASH do bcrypt (60 caracteres), nunca a senha. O nome da coluna
+    -- continua `senha` para nao quebrar quem ja le a tabela; o conteudo e que
+    -- mudou. Hash nao se "desfaz": esquecer a senha significa cadastrar outra.
     senha     TEXT NOT NULL,
     criado_em TIMESTAMPTZ NOT NULL DEFAULT now()
 );

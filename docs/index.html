@@ -308,16 +308,20 @@ function telaConta(){
         '<div style="margin-bottom:12px"><label>Login</label><input id="cLogin"></div>' +
         '<div style="margin-bottom:12px"><label>E-mail</label><input id="cEmail" type="email"></div>' +
         '<div style="margin-bottom:12px"><label>CPF</label><input id="cCpf"></div>' +
-        '<div style="margin-bottom:14px"><label>Senha</label><input id="cSenha" type="password"></div>' +
+        '<div style="margin-bottom:14px"><label>Senha</label>' +
+          '<input id="cSenha" type="password" minlength="6">' +
+          '<div style="font-size:12px;color:var(--muted);margin-top:4px">Ao menos 6 caracteres. ' +
+          'Guardada como hash: nem o servidor consegue ler de volta.</div></div>' +
         '<button class="acao" id="bCriar">Cadastrar</button>' +
       '</div>' +
     '</div>';
   $('#bEntrar').onclick = async function(){
     try {
-      var r = await api('/api/usuarios?login=' + encodeURIComponent($('#lLogin').value) +
-                        '&senha=' + encodeURIComponent($('#lSenha').value));
-      if (!r.length) return aviso('#msgLogin', 'erro', 'Login ou senha não conferem.');
-      USUARIO = r[0];
+      // POST: a senha vai no corpo. Na URL ela ficaria no historico do navegador.
+      USUARIO = await api('/api/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login: $('#lLogin').value, senha: $('#lSenha').value })
+      });
       pinta();
     } catch (e) { aviso('#msgLogin', 'erro', e.message); }
   };
