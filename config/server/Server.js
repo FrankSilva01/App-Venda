@@ -50,7 +50,16 @@ app.use('/upload', express.static(upload.PASTA_UPLOADS));
 //
 // express.static so responde por arquivo que existe, entao nao atrapalha
 // nenhuma rota da API.
-app.use(express.static(path.join(__dirname, '..', '..', 'docs')));
+//
+// no-cache NAO quer dizer "nao guarde": quer dizer "pergunte antes de usar".
+// O navegador continua guardando e o servidor responde 304 quando nada mudou --
+// de graca numa rede local. Sem isso, atualizar o sistema deixa celular e
+// tablet rodando a tela antiga por tempo indeterminado, e o sintoma ("aqui nao
+// mudou nada") nao aponta para o cache.
+app.use(express.static(path.join(__dirname, '..', '..', 'docs'), {
+  etag: true,
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+}));
 
 // Enderecos pelos quais esta maquina pode ser alcancada na rede. O instalador
 // nao tem como adivinhar o IP, e errar aqui so aparece com o adesivo ja colado

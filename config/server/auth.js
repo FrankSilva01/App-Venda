@@ -134,8 +134,13 @@ async function identifica(req, res, next) {
 // Sessao vencida nao serve para nada e a tabela so cresce. Limpa no boot e uma
 // vez por dia -- nao vale um agendador para isso.
 async function limpaSessoes() {
-  try { await query('DELETE FROM sessoes WHERE expira_em < now()'); }
-  catch (e) { console.error('Falha ao limpar sessões:', e.message); }
+  try {
+    await query('DELETE FROM sessoes WHERE expira_em < now()');
+  } catch (e) {
+    // `e.message` sozinho pode sair vazio (erro de conexao do pg as vezes vem
+    // sem message), e ai o log dizia "Falha ao limpar sessões:" e mais nada.
+    console.error('Falha ao limpar sessões:', e && (e.message || e.code || e));
+  }
 }
 
 module.exports = {

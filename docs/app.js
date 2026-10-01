@@ -1165,10 +1165,19 @@ async function telaConfig() {
         'as telas e a API na mesma origem.</p>' +
       '<div id="enderecos" class="nota">procurando endereços…</div>' +
       '<div class="linha" style="margin-top:12px">' +
-      texto('URL da tela do cliente', 'cliente.url', 'É o que vai dentro do QR.') +
+      texto('URL da tela do cliente (a que está no QR)', 'cliente.url') +
       texto('API vista pelo celular', 'api.publica',
         'Em branco quando a tela e a API saem do mesmo endereço.') +
-      '</div></div>' +
+      '</div>' +
+      '<div style="margin-top:12px"><label>Endereços guardados ' +
+        '<span style="font-weight:400;color:var(--suave)">(um por linha: rótulo|URL)</span></label>' +
+        '<textarea data-k="cliente.enderecos" rows="3" ' +
+          'placeholder="Casa|http://192.168.1.10:3001/mesa.html">' +
+          esc(CFG['cliente.enderecos'] || '') + '</textarea>' +
+        '<p class="nota">A máquina muda de IP conforme a rede. Um QR carrega um ' +
+          'endereço só — guardando os dois aqui, trocar de rede é um clique e um ' +
+          'reimprimir, sem redigitar IP e sem gerar token novo.</p></div>' +
+      '</div>' +
       '<div class="cartao"><h2>Desenvolvimento</h2>' +
       '<p class="nota">Endereços técnicos só aparecem nas outras telas quando isto está ' +
         'ligado. Em operação normal, deixe desligado.</p><div class="linha">' +
@@ -1202,19 +1211,37 @@ async function telaConfig() {
 async function listaEnderecos() {
   var el = $('#enderecos');
   if (!el) return;
-  var lista = [{ base: API, origem: 'o endereço por onde você abriu este painel' }];
+  var ativo = CFG['cliente.url'] || '';
+  var lista = [{ url: API + '/mesa.html', rotulo: 'o endereço por onde você abriu este painel' }];
+
+  // Os guardados pelo próprio usuário (casa, trabalho...).
+  String(CFG['cliente.enderecos'] || '').split('\n').forEach(function (linha) {
+    var l = linha.trim();
+    if (!l) return;
+    var corte = l.indexOf('|');
+    var url = corte >= 0 ? l.slice(corte + 1).trim() : l;
+    var rotulo = corte >= 0 ? l.slice(0, corte).trim() : 'guardado';
+    if (!lista.some(function (x) { return x.url === url; })) lista.push({ url: url, rotulo: rotulo });
+  });
+
   try {
     var r = await api('/api/rede');
     r.enderecos.forEach(function (e) {
-      if (e.base !== API) lista.push({ base: e.base, origem: 'interface ' + e.interface });
+      if (!lista.some(function (x) { return x.url === e.cliente; })) {
+        lista.push({ url: e.cliente, rotulo: 'interface ' + e.interface });
+      }
     });
   } catch (e) { /* a lista do navegador já basta */ }
 
   el.innerHTML = lista.map(function (e, n) {
-    return '<div class="item"><code>' + esc(e.base) + '</code>' +
-      '<span class="nota">' + esc(e.origem) + '</span>' +
-      '<button class="btn ' + (n ? 'sec ' : '') + 'pequeno empurra" data-usar="' + esc(e.base) +
-      '">Usar este</button></div>';
+    var ehAtivo = e.url === ativo;
+    return '<div class="item"><code>' + esc(e.url) + '</code>' +
+      '<span class="nota">' + esc(e.rotulo) + '</span>' +
+      (ehAtivo
+        ? '<span class="chip verde empurra">no QR agora</span>'
+        : '<button class="btn ' + (n ? 'sec ' : '') + 'pequeno empurra" data-usar="' +
+          esc(e.url) + '">Usar este</button>') +
+      '</div>';
   }).join('') +
   '<p class="nota">Para o celular do cliente, use um endereço de rede (um ' +
     '<code>192.168.…</code>), não <code>localhost</code>: no celular, localhost é o ' +
@@ -1222,12 +1249,13 @@ async function listaEnderecos() {
 
   $$('[data-usar]').forEach(function (b) {
     b.onclick = function () {
-      var base = b.getAttribute('data-usar');
-      $('[data-k="cliente.url"]').value = base + '/mesa.html';
+      var url = b.getAttribute('data-usar');
+      $('[data-k="cliente.url"]').value = url;
       // Mesma origem: a tela do cliente descobre a API sozinha, e deixar o
       // campo preenchido só criaria um segundo endereço para errar.
       $('[data-k="api.publica"]').value = '';
-      aviso('#msgC', 'ok', 'Endereço preenchido. Salve e regenere os QR das mesas.');
+      aviso('#msgC', 'ok', 'Endereço escolhido. Salve e reimprima os QR — ' +
+        'o token das mesas não muda.');
     };
   });
 }

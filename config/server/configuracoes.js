@@ -37,6 +37,15 @@ const PADRAO = {
   // Endereco da tela do cliente -- e o que vai dentro do QR da mesa. Em
   // producao e a URL publica; em teste, o http://localhost:... da sua maquina.
   'cliente.url': 'https://franksilva01.github.io/App-Venda/mesa.html',
+
+  // Enderecos conhecidos, um por linha, no formato `rotulo|url`.
+  //
+  // A mesma maquina muda de IP conforme a rede (casa, trabalho). Um QR carrega
+  // UM endereco, entao nao da para servir duas redes com o mesmo adesivo -- mas
+  // da para guardar os dois e trocar o ativo num clique, sem redigitar IP e sem
+  // gerar token novo: o desenho do QR sai da configuracao do momento.
+  'cliente.enderecos': '',
+
   // Endereco da API visto pelo CELULAR do cliente. Em branco, a tela do cliente
   // usa o que estiver guardado no navegador. Nao da para adivinhar: a API roda
   // na maquina do restaurante e "localhost" no celular e o proprio celular.
@@ -132,6 +141,16 @@ async function salvar(mudancas) {
   if (!/^https?:\/\/.+/.test(novo['cliente.url'])) {
     throw recusa('A URL da tela do cliente precisa começar com http:// ou https://.');
   }
+
+  // Cada linha da lista precisa ser `rotulo|url` com url de verdade. Guardar um
+  // endereço quebrado aqui só se descobre no celular do cliente, com o adesivo
+  // já colado na mesa.
+  String(novo['cliente.enderecos'] || '').split('\n').forEach((linha) => {
+    const l = linha.trim();
+    if (!l) return;
+    const url = l.indexOf('|') >= 0 ? l.slice(l.indexOf('|') + 1).trim() : l;
+    if (!/^https?:\/\/.+/.test(url)) throw recusa('Endereço inválido na lista: ' + l);
+  });
   if (novo['api.publica'] && !/^https?:\/\/.+/.test(novo['api.publica'])) {
     throw recusa('O endereço público da API precisa começar com http:// ou https://.');
   }
