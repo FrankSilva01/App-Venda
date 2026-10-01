@@ -9,15 +9,17 @@ São **duas metades**, e elas moram em lugares diferentes:
 | `docs/` | as telas (HTML/CSS/JS, sem build) | **GitHub Pages** |
 | `config/` | a API (Express) + PostgreSQL | **a sua máquina** |
 
-E são **duas telas separadas**, de propósito:
+E são **três páginas separadas**, de propósito:
 
 | Página | Quem usa | Como chega nela |
 |---|---|---|
-| `docs/index.html` | o restaurante | abre direto; tem mesas e QR, cozinha, caixa, produtos e módulos |
+| `docs/login.html` | funcionários | entrada do painel; sem login não há menu |
+| `docs/index.html` | o restaurante | Salão, Cozinha, Caixa, Cardápio, Mesas & QR, Relatórios, Usuários, Configurações |
 | `docs/mesa.html` | o cliente | **só pelo QR da mesa** — sem o token na URL, a página não abre nada |
 
-O cliente não vê cozinha, caixa nem configuração, e não escolhe a mesa: o QR já
-diz qual é.
+O cliente não vê salão, cozinha, caixa nem configuração, e não escolhe a mesa: o
+QR já diz qual é. O painel nem desenha o menu antes do login, e cada perfil só
+enxerga as áreas que são dele.
 
 O GitHub Pages só serve arquivo estático — não executa Node nem hospeda banco. Por
 isso a tela vai para lá e a API fica local. A página tem um campo **API** no topo:
@@ -56,6 +58,66 @@ node scripts/smoke.js
 Ele passa pelo fluxo inteiro com tudo desligado, confere que as rotas dos módulos
 desligados respondem 409, liga o pagamento antecipado, liga o estoque, e no fim
 devolve a configuração ao padrão e apaga o que criou.
+
+## Primeiro acesso e perfis
+
+Na primeira vez, com o banco sem nenhum usuário, `login.html` vira **“criar o
+primeiro administrador”**. Depois disso o cadastro público fecha sozinho: quem
+cria conta é o administrador, em **Usuários**.
+
+Esqueceu a senha? Hash não se desfaz — a saída é pelo terminal, na máquina onde
+a API roda:
+
+```bash
+npm run admin -- listar
+npm run admin -- senha frank uma-senha-nova
+npm run admin -- criar gerente uma-senha
+```
+
+Quem tem acesso ao terminal já tem acesso ao banco: isso não abre nenhuma porta
+que já não estivesse aberta, e evita uma senha de recuperação escrita no código.
+
+| Perfil | Enxerga |
+|---|---|
+| `admin` | tudo |
+| `gerente` | salão, cozinha, caixa, cardápio, mesas, relatórios, configurações |
+| `garcom` | salão (e a conta das mesas que atende) |
+| `cozinha` | só a tela de produção |
+| `caixa` | salão e caixa |
+
+A sessão é uma linha na tabela `sessoes`, não um JWT assinado: **desativar um
+funcionário derruba o acesso dele na hora**, e trocar a senha encerra as sessões
+abertas. Com token autoassinado, quem foi desligado continuaria entrando até o
+token vencer.
+
+## Salão, garçom e chamados
+
+**Salão** é a tela central da operação: um cartão por mesa, com a cor dada pela
+situação mais urgente — chamou o garçom, pediu a conta, tem prato pronto, está
+em preparo, está ocupada, está livre. Clicar na mesa abre a comanda, o histórico
+e o botão **+ Adicionar pedido**.
+
+O pedido lançado pelo garçom usa a **mesma rota** do pedido do cliente. O que
+muda é que vai com sessão, e o servidor carimba `origem = garcom` e o usuário —
+a origem nunca vem do corpo da requisição, senão não serviria para auditar nada.
+
+Do celular, o cliente tem **Chamar garçom** e **Solicitar fechamento** (este
+último pode ser desligado em Configurações). O painel recebe por SSE: aparece um
+aviso de canto, um número no menu e a mesa muda de cor no salão.
+
+## Tempo real
+
+Cozinha, salão, caixa e a tela do cliente se atualizam sozinhos por **SSE**
+(`GET /api/stream` e `/api/qr/:token/stream`). O evento carrega só o nome e os
+ids — quem recebe recarrega o que lhe interessa. Mandar o objeto inteiro
+significaria manter dois formatos em sincronia e vazaria dado de uma mesa para a
+tela de outra.
+
+O cronômetro da cozinha anda por conta própria, sem refazer a tela, e o card
+muda de cor nos tempos configurados em **Configurações → Operação**.
+
+> O painel lê o fluxo com `fetch`, não com `EventSource`: `EventSource` não
+> aceita cabeçalho, e o token de sessão não pode ir na URL.
 
 ## O QR da mesa
 
@@ -161,13 +223,23 @@ coluna. O cardápio nunca precisa saber quem decidiu.
 | GET | `/api/mesa/:numero/cardapio` | o mesmo, por número — caminho administrativo |
 | POST | `/api/pedidos` | `{token \| mesa, cliente, itens:[{produto_id, quantidade, observacao}], pagar_agora}` |
 | GET | `/api/cozinha` | fila, com segundos desde a liberação |
-| POST | `/api/pedidos/:id/preparo\|pronto\|entregue\|cancelar` | avança a etapa |
+| POST | `/api/pedidos/:id/preparo\|pronto\|entregue` | avança a etapa |
+| POST | `/api/pedidos/:id/cancelar` | exige `{motivo}`; fica no histórico |
 | GET | `/api/comandas?status=aberta` | lista do caixa, já com os totais |
 | GET | `/api/comandas/:id` | pedidos, itens, pagamentos e totais |
 | PATCH | `/api/comandas/:id` | `{servico, desconto}` |
 | POST | `/api/comandas/:id/pagamentos` | dinheiro, maquininha ou Pix na chave |
 | POST | `/api/comandas/:id/fechar` | 409 se há saldo ou pedido na cozinha |
-| GET/PUT | `/api/configuracoes` | lê e grava os módulos |
+| GET/PUT | `/api/configuracoes` | lê (aberto) e grava (perfil `config`) |
+| GET | `/api/salao` | uma linha por mesa: situação, total, tempo, chamados |
+| GET/POST | `/api/chamados`, `/api/chamados/:id/assumir\|resolver` | atendimento e fechamento |
+| POST | `/api/qr/:token/chamado` | o cliente chama o garçom ou pede a conta |
+| GET | `/api/stream`, `/api/qr/:token/stream` | SSE: painel e cliente |
+| GET | `/api/comandas/:id/historico` | auditoria daquela conta |
+| GET/POST/PATCH | `/api/usuarios`, `/api/usuarios/:id`, `/api/usuarios/:id/senha` | perfis |
+| POST/DELETE | `/api/login`, `/api/sessao` | entrar, conferir e sair |
+| GET/PUT | `/api/cardapio/categorias`, `/api/cardapio/adicionais` | cardápio administrativo |
+| GET/PUT | `/api/cardapio/produtos/:id/adicionais` | o que vale para cada prato |
 | POST | `/api/cadastrarUsuario` | 409 se login, e-mail ou CPF já existir |
 | POST | `/api/login` | `{login, senha}` no corpo; 401 quando não confere |
 | GET | `/api/usuarios` | **410** — removida, a senha ia na URL |
@@ -231,19 +303,21 @@ recuperar a original, nem pelo banco.
 
 ## O que falta
 
-Do `Etapas.txt`, saíram nesta revisão: **observação no pedido** ("sem alface", que
-vai literal até a tela da cozinha), **histórico de pedidos** por comanda e
-**acompanhamento do preparo** (novo → preparo → pronto → entregue).
+Do `Etapas.txt`, já saíram: **observação no pedido** ("sem alface", que vai
+literal até a tela da cozinha), **histórico de pedidos** por comanda,
+**acompanhamento do preparo** (novo → preparo → pronto → entregue) e a
+**edição do pedido** antes de confirmar. Autenticação por perfil, que era o
+buraco mais sério da revisão anterior, está fechada.
 
 Seguem abertos:
 
 - **Adquirente de verdade** no lugar do stub de pagamento.
 - **Carrinho persistido** — hoje ele vive só na memória da aba.
-- **Autenticação nas rotas administrativas.** Cozinha, caixa, configuração e
-  **as rotas de QR** estão abertas: quem alcança a API fecha uma mesa ou revoga
-  um QR. Há login, mas ele ainda não protege rota nenhuma. É o buraco mais sério
-  que resta — e enquanto ele existir, o token do QR protege o cliente de errar a
-  mesa, não a casa de quem age de má-fé.
-- **Recuperação de senha**, que não existe (hash não se desfaz).
-- **Tempo real na cozinha.** A tela se atualiza de 10 em 10 segundos; o certo é
-  WebSocket ou SSE.
+- **HTTPS.** A sessão viaja em `Authorization` por HTTP simples na rede local.
+  Em rede confiável do restaurante é aceitável; exposta à internet, não.
+- **Recuperação de senha pelo próprio usuário** — hoje só o administrador
+  redefine (hash não se desfaz).
+- **Divisão de conta por pessoa** no caixa: hoje divide por valor, não por item.
+- **Impressão em impressora térmica** (a conta sai pela janela de impressão do
+  navegador).
+- **Relatórios por período** além de hoje e dos recortes já existentes.

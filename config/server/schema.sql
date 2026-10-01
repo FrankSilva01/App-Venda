@@ -164,3 +164,100 @@ CREATE TABLE IF NOT EXISTS estoque_mov (
 );
 
 CREATE INDEX IF NOT EXISTS estoque_mov_criado_idx ON estoque_mov (criado_em DESC);
+
+-- ===========================================================================
+-- REVISAO 3: perfis, salao, garcom, atendimento, adicionais e auditoria.
+--
+-- Tudo aditivo: ALTER ... IF NOT EXISTS e CREATE ... IF NOT EXISTS. Rodar o
+-- schema de novo em banco com movimento nao apaga nem reescreve linha nenhuma.
+-- ===========================================================================
+
+-- Perfis. A coluna nasce com 'admin' porque quem ja estava cadastrado era o
+-- dono do sistema -- nao havia outro tipo de conta. Usuario novo informa o
+-- perfil obrigatoriamente.
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nome TEXT;
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS perfil TEXT NOT NULL DEFAULT 'admin'
+    CHECK (perfil IN ('admin', 'gerente', 'garcom', 'cozinha', 'caixa'));
+ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS ativo BOOLEAN NOT NULL DEFAULT true;
+
+-- Sessao no banco e nao JWT: assim "desativar usuario" tem efeito IMEDIATO.
+-- Com token autoassinado, quem foi demitido continua entrando ate o token
+-- vencer, e nao ha como revogar sem uma lista negra -- que e isto aqui.
+CREATE TABLE IF NOT EXISTS sessoes (
+    token      TEXT PRIMARY KEY,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios (id) ON DELETE CASCADE,
+    criado_em  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expira_em  TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessoes_usuario_idx ON sessoes (usuario_id);
+
+-- Area da mesa (Salao, Deck, Praia...). Agrupa o mapa do salao.
+ALTER TABLE mesas ADD COLUMN IF NOT EXISTS area TEXT NOT NULL DEFAULT 'Salão';
+
+-- De onde veio o pedido e quem lancou. Sem isso nao da para saber se o erro foi
+-- do cliente no celular ou do garcom no tablet.
+ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS origem TEXT NOT NULL DEFAULT 'qr'
+    CHECK (origem IN ('qr', 'garcom', 'caixa'));
+ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS usuario_id INTEGER REFERENCES usuarios (id) ON DELETE SET NULL;
+ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS cancelado_em TIMESTAMPTZ;
+ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS cancelado_motivo TEXT;
+
+-- Adicionais e complementos sao a MESMA estrutura com dois rotulos: o que muda
+-- e o preco (complemento costuma ser zero) e onde aparecem na tela. Dois
+-- modelos separados dariam duas telas, duas rotas e dois jeitos de errar o
+-- total.
+CREATE TABLE IF NOT EXISTS adicionais (
+    id    SERIAL PRIMARY KEY,
+    nome  TEXT NOT NULL,
+    preco NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (preco >= 0),
+    tipo  TEXT NOT NULL DEFAULT 'adicional' CHECK (tipo IN ('adicional', 'complemento')),
+    ativo BOOLEAN NOT NULL DEFAULT true
+);
+
+CREATE TABLE IF NOT EXISTS produto_adicionais (
+    produto_id   INTEGER NOT NULL REFERENCES produtos (idnomeProduto) ON DELETE CASCADE,
+    adicional_id INTEGER NOT NULL REFERENCES adicionais (id) ON DELETE CASCADE,
+    PRIMARY KEY (produto_id, adicional_id)
+);
+
+-- O que o cliente escolheu, congelado como o item: nome e preco de hoje.
+-- IMPORTANTE: pedido_itens.preco ja guarda o preco UNITARIO FINAL (base +
+-- adicionais). Esta tabela e o detalhamento para a cozinha e para a conta --
+-- nao somar de novo, senao o adicional e cobrado em dobro.
+CREATE TABLE IF NOT EXISTS pedido_item_adicionais (
+    id             SERIAL PRIMARY KEY,
+    pedido_item_id INTEGER NOT NULL REFERENCES pedido_itens (id) ON DELETE CASCADE,
+    adicional_id   INTEGER REFERENCES adicionais (id) ON DELETE SET NULL,
+    nome           TEXT NOT NULL,
+    preco          NUMERIC(10,2) NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS pedido_item_adic_idx ON pedido_item_adicionais (pedido_item_id);
+
+-- Chamados da mesa: "chamar garcom" e "solicitar fechamento".
+CREATE TABLE IF NOT EXISTS chamados (
+    id          SERIAL PRIMARY KEY,
+    mesa_id     INTEGER NOT NULL REFERENCES mesas (id) ON DELETE CASCADE,
+    comanda_id  INTEGER REFERENCES comandas (id) ON DELETE SET NULL,
+    tipo        TEXT NOT NULL CHECK (tipo IN ('atendimento', 'fechamento')),
+    status      TEXT NOT NULL DEFAULT 'aberto' CHECK (status IN ('aberto', 'assumido', 'resolvido')),
+    usuario_id  INTEGER REFERENCES usuarios (id) ON DELETE SET NULL,
+    criado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atendido_em TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS chamados_abertos_idx ON chamados (status);
+
+-- Auditoria. DE PROPOSITO sem chave estrangeira: apagar uma comanda nao pode
+-- apagar o registro de que ela existiu. Os ids ficam soltos, como numero.
+CREATE TABLE IF NOT EXISTS auditoria (
+    id         BIGSERIAL PRIMARY KEY,
+    evento     TEXT NOT NULL,
+    mesa_id    INTEGER,
+    comanda_id INTEGER,
+    pedido_id  INTEGER,
+    usuario_id INTEGER,
+    origem     TEXT,
+    detalhe    JSONB,
+    criado_em  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS auditoria_criado_idx ON auditoria (criado_em DESC);
+CREATE INDEX IF NOT EXISTS auditoria_comanda_idx ON auditoria (comanda_id);

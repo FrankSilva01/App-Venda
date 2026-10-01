@@ -12,7 +12,28 @@ const PADRAO = {
   'pagamento.integrado': 'false',
   'estoque.modo': 'desligado',
   'financeiro.ativo': 'true',
+
+  'geral.nome': 'App-Venda',
+
+  // Taxa de servico: ligar/desligar para a casa, o percentual, e se o caixa
+  // pode tirar na comanda. Antes era so o percentual, e "nao cobrar" nao
+  // existia como configuracao -- so dava para zerar o numero, que e outra
+  // coisa (10% de nada continua aparecendo como linha na conta).
+  'servico.ativo': 'true',
   'servico.percentual': '10',
+  'servico.editavel_no_caixa': 'true',
+
+  // Operacao
+  'operacao.cliente_fecha': 'true',
+  'operacao.garcom_lanca': 'true',
+
+  // Cozinha: a partir de quantos minutos o card muda de cor.
+  'cozinha.atencao_min': '10',
+  'cozinha.atraso_min': '20',
+
+  // Endereco tecnico (URL do cliente, IP da API) na tela. Serve para instalar e
+  // depurar; em operacao normal e ruido e vaza o desenho da rede.
+  'dev.mostrar_enderecos': 'false',
   // Endereco da tela do cliente -- e o que vai dentro do QR da mesa. Em
   // producao e a URL publica; em teste, o http://localhost:... da sua maquina.
   'cliente.url': 'https://franksilva01.github.io/App-Venda/mesa.html',
@@ -27,6 +48,11 @@ const VALORES = {
   'pagamento.integrado': ['true', 'false'],
   'estoque.modo': ['desligado', 'simples', 'ingrediente'],
   'financeiro.ativo': ['true', 'false'],
+  'servico.ativo': ['true', 'false'],
+  'servico.editavel_no_caixa': ['true', 'false'],
+  'operacao.cliente_fecha': ['true', 'false'],
+  'operacao.garcom_lanca': ['true', 'false'],
+  'dev.mostrar_enderecos': ['true', 'false'],
 };
 
 let cache = null;
@@ -84,6 +110,21 @@ async function salvar(mudancas) {
   const pct = Number(novo['servico.percentual']);
   if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
     throw recusa('Percentual de serviço deve ficar entre 0 e 100.');
+  }
+
+  if (!String(novo['geral.nome']).trim()) {
+    throw recusa('O nome do estabelecimento não pode ficar vazio.');
+  }
+
+  const atencao = Number(novo['cozinha.atencao_min']);
+  const atraso = Number(novo['cozinha.atraso_min']);
+  if (!Number.isFinite(atencao) || !Number.isFinite(atraso) || atencao < 1 || atraso < 1) {
+    throw recusa('Os tempos da cozinha precisam ser números de minutos.');
+  }
+  // Atraso antes da atencao pintaria o card de vermelho e depois de amarelo --
+  // a cor andaria para tras conforme o pedido demora.
+  if (atraso <= atencao) {
+    throw recusa('O tempo de atraso precisa ser maior que o de atenção.');
   }
 
   // URL torta vira QR que nao abre nada -- e so se descobre com o adesivo ja

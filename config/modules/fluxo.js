@@ -16,6 +16,7 @@ const QRCode = require('qrcode');
 const { query, transacao } = require('../server/dbConnection');
 const cfg = require('../server/configuracoes');
 const eventos = require('../server/eventos');
+const auditoria = require('../server/auditoria');
 
 const router = express.Router();
 
@@ -49,8 +50,12 @@ async function totalComanda(comandaId) {
   );
 
   const pct = Number(await cfg.ler('servico.percentual'));
+  // Duas chaves, e as duas tem de estar ligadas: a da casa (cobra servico?) e a
+  // da comanda (esta mesa paga?). O caixa desliga na comanda quando o cliente
+  // pede para tirar; a configuracao desliga para a casa inteira.
+  const cobraServico = (await cfg.ligado('servico.ativo')) && c.rows[0].servico;
   const consumo = dinheiro(i.rows[0].consumo);
-  const servico = c.rows[0].servico ? dinheiro(consumo * (pct / 100)) : 0;
+  const servico = cobraServico ? dinheiro(consumo * (pct / 100)) : 0;
   const desconto = dinheiro(c.rows[0].desconto);
   const total = dinheiro(consumo + servico - desconto);
   const pago = dinheiro(p.rows[0].pago);
@@ -58,6 +63,7 @@ async function totalComanda(comandaId) {
   return {
     consumo,
     servico,
+    servico_cobrado: cobraServico,
     servico_percentual: pct,
     desconto,
     total,
@@ -99,18 +105,37 @@ router.get('/mesas', async (req, res) => {
 });
 
 router.post('/mesas', async (req, res) => {
-  const { numero, apelido } = req.body || {};
+  const { numero, apelido, area } = req.body || {};
   if (!numero) return res.status(400).json({ message: 'Informe o número da mesa.' });
   try {
     const r = await query(
-      'INSERT INTO mesas (numero, apelido) VALUES ($1, $2) RETURNING *',
-      [Number(numero), apelido || null]
+      `INSERT INTO mesas (numero, apelido, area) VALUES ($1, $2, COALESCE($3, 'Salão'))
+       RETURNING *`,
+      [Number(numero), apelido || null, (area || '').trim() || null]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ message: 'Essa mesa já existe.' });
     erro(res, e, 'Erro ao criar a mesa');
   }
+});
+
+router.patch('/mesas/:id', async (req, res) => {
+  const { apelido, area, ativa } = req.body || {};
+  try {
+    const r = await query(
+      `UPDATE mesas SET apelido = COALESCE($2, apelido),
+                        area    = COALESCE($3, area),
+                        ativa   = COALESCE($4, ativa)
+        WHERE id = $1 RETURNING *`,
+      [Number(req.params.id),
+       apelido === undefined ? null : apelido,
+       area === undefined ? null : String(area).trim(),
+       ativa === undefined ? null : !!ativa]
+    );
+    if (!r.rows.length) return res.status(404).json({ message: 'Mesa não encontrada.' });
+    res.json(r.rows[0]);
+  } catch (e) { erro(res, e, 'Erro ao alterar a mesa'); }
 });
 
 // --------------------------------------------------------- QR da mesa
@@ -173,6 +198,16 @@ async function visaoDaMesa(mesa) {
   const prod = await query(
     'SELECT * FROM produtos WHERE disponivel ORDER BY categoria, nomeProduto'
   );
+  // Adicionais de todos os produtos numa consulta: a tela do cliente abre o
+  // detalhe do item sem ir ao servidor de novo.
+  const adic = await query(
+    `SELECT pa.produto_id, a.id, a.nome, a.preco, a.tipo
+       FROM produto_adicionais pa JOIN adicionais a ON a.id = pa.adicional_id
+      WHERE a.ativo ORDER BY a.tipo, a.nome`
+  );
+  prod.rows.forEach((p) => {
+    p.adicionais = adic.rows.filter((a) => a.produto_id === p.idnomeproduto);
+  });
   const comanda = await query(
     "SELECT * FROM comandas WHERE mesa_id = $1 AND status = 'aberta'", [mesa.id]
   );
@@ -189,16 +224,25 @@ async function visaoDaMesa(mesa) {
         WHERE p.comanda_id = $1 ORDER BY it.id`,
       [comanda.rows[0].id]
     );
+    const comExtras = await comAdicionais(itens.rows);
     pedidos = ps.rows.map((p) =>
-      Object.assign(p, { itens: itens.rows.filter((i) => i.pedido_id === p.id) }));
+      Object.assign(p, { itens: comExtras.filter((i) => i.pedido_id === p.id) }));
     totais = await totalComanda(comanda.rows[0].id);
   }
 
   const modo = await cfg.ler('pagamento.modo');
   const integrado = await cfg.ligado('pagamento.integrado');
 
+  const chamados = await query(
+    "SELECT id, tipo, status FROM chamados WHERE mesa_id = $1 AND status <> 'resolvido'",
+    [mesa.id]
+  );
+
   return {
-    mesa: { id: mesa.id, numero: mesa.numero, apelido: mesa.apelido },
+    estabelecimento: await cfg.ler('geral.nome'),
+    mesa: { id: mesa.id, numero: mesa.numero, apelido: mesa.apelido, area: mesa.area },
+    chamados: chamados.rows,
+    cliente_pode_fechar: await cfg.ligado('operacao.cliente_fecha'),
     produtos: prod.rows,
     comanda: comanda.rows[0] || null,
     pedidos,
@@ -236,12 +280,14 @@ router.get('/mesa/:numero/cardapio', async (req, res) => {
 });
 
 // -------------------------------------------------------------- comandas
+// Devolve { comanda, criada }. O `criada` existe para a abertura da mesa virar
+// um evento de auditoria uma vez so -- e nao a cada pedido na mesma conta.
 async function comandaAberta(mesaId, cliente) {
   const exec = cliente ? (s, v) => cliente.query(s, v) : (s, v) => query(s, v);
   const achou = await exec("SELECT * FROM comandas WHERE mesa_id = $1 AND status = 'aberta'", [mesaId]);
-  if (achou.rows.length) return achou.rows[0];
+  if (achou.rows.length) return { comanda: achou.rows[0], criada: false };
   const nova = await exec('INSERT INTO comandas (mesa_id) VALUES ($1) RETURNING *', [mesaId]);
-  return nova.rows[0];
+  return { comanda: nova.rows[0], criada: true };
 }
 
 router.get('/comandas', async (req, res) => {
@@ -280,10 +326,11 @@ router.get('/comandas/:id', async (req, res) => {
       'SELECT * FROM pagamentos WHERE comanda_id = $1 ORDER BY id', [id]
     );
 
+    const comExtras = await comAdicionais(itens.rows);
     res.json({
       comanda: c.rows[0],
       pedidos: pedidos.rows.map((p) =>
-        Object.assign(p, { itens: itens.rows.filter((i) => i.pedido_id === p.id) })),
+        Object.assign(p, { itens: comExtras.filter((i) => i.pedido_id === p.id) })),
       pagamentos: pagamentos.rows,
       totais: await totalComanda(id),
     });
@@ -327,6 +374,7 @@ router.post('/comandas/:id/pagamentos', async (req, res) => {
        RETURNING *`,
       [Number(req.params.id), forma, dinheiro(valor)]
     );
+    eventos.emitir('pagamento:registrado', { pagamento: r.rows[0], usuario: req.usuario || null });
     res.status(201).json({ pagamento: r.rows[0], totais: await totalComanda(Number(req.params.id)) });
   } catch (e) { erro(res, e, 'Erro ao lançar o pagamento'); }
 });
@@ -337,11 +385,28 @@ router.post('/comandas/:id/fechar', async (req, res) => {
     const totais = await totalComanda(id);
     if (!totais) return res.status(404).json({ message: 'Comanda não encontrada.' });
     // Centavo de tolerancia: 1/3 de R$ 283,80 nao fecha exato em divisao.
+    //
+    // Fechar com saldo aberto existe (cortesia, cliente que foi embora), mas
+    // exige DUAS coisas: dizer explicitamente que e isso mesmo e ter perfil para
+    // tanto. Garcom nao perdoa conta.
     if (totais.saldo > 0.01) {
-      return res.status(409).json({
-        message: 'Ainda faltam ' + totais.saldo.toFixed(2) + ' para fechar.',
-        totais,
-      });
+      const insistiu = req.body && req.body.aceita_saldo_pendente;
+      const podePerdoar = !req.usuario || ['admin', 'gerente', 'caixa'].includes(req.usuario.perfil);
+      if (!insistiu) {
+        return res.status(409).json({
+          // Virgula: a mensagem vai inteira para a tela, e "R$ 8.25" num caixa
+          // brasileiro faz o operador reler duas vezes.
+          message: 'Ainda faltam R$ ' + totais.saldo.toFixed(2).replace('.', ',') + ' para fechar.',
+          saldo_pendente: true,
+          pode_perdoar: podePerdoar,
+          totais,
+        });
+      }
+      if (!podePerdoar) {
+        return res.status(403).json({
+          message: 'Fechar com saldo em aberto exige perfil de caixa, gerente ou admin.',
+        });
+      }
     }
     const aberto = await query(
       `SELECT COUNT(*)::int AS n FROM pedidos
@@ -359,16 +424,33 @@ router.post('/comandas/:id/fechar', async (req, res) => {
     );
     if (!r.rows.length) return res.status(409).json({ message: 'Comanda já estava fechada.' });
 
-    eventos.emitir('comanda:fechada', { comanda: r.rows[0], totais });
+    // Chamado de fechamento pendente desta mesa morre junto: a mesa fechou, nao
+    // ha mais ninguem para atender.
+    await query(
+      `UPDATE chamados SET status = 'resolvido', atendido_em = now()
+        WHERE comanda_id = $1 AND status <> 'resolvido'`, [id]
+    );
+
+    eventos.emitir('comanda:fechada', {
+      comanda: r.rows[0], totais, usuario: req.usuario || null,
+    });
     res.json({ comanda: r.rows[0], totais });
   } catch (e) { erro(res, e, 'Erro ao fechar a comanda'); }
 });
 
 // --------------------------------------------------------------- pedidos
 router.post('/pedidos', async (req, res) => {
-  // O cliente manda `token` (o do QR); o caixa e os testes mandam `mesa`.
+  // O cliente manda `token` (o do QR); o garcom e o caixa mandam `mesa`.
   const { mesa, token, cliente, itens, pagar_agora } = req.body || {};
   if (!mesa && !token) return res.status(400).json({ message: 'Informe a mesa.' });
+
+  // Origem: quem tem sessao e funcionario; o resto veio do QR. Nao vem do corpo
+  // da requisicao de proposito -- origem que o cliente pode escolher nao serve
+  // para auditar nada.
+  const origem = req.usuario ? (req.usuario.perfil === 'caixa' ? 'caixa' : 'garcom') : 'qr';
+  if (origem === 'garcom' && !(await cfg.ligado('operacao.garcom_lanca'))) {
+    return res.status(403).json({ message: 'Lançamento de pedido pelo garçom está desligado.' });
+  }
   if (!Array.isArray(itens) || !itens.length) {
     return res.status(400).json({ message: 'O pedido está vazio.' });
   }
@@ -401,14 +483,16 @@ router.post('/pedidos', async (req, res) => {
         e.status = 404; throw e;
       }
 
-      const comanda = await comandaAberta(m.rows[0].id, cx);
+      const abertura = await comandaAberta(m.rows[0].id, cx);
+      const comanda = abertura.comanda;
 
       const p = await cx.query(
-        `INSERT INTO pedidos (comanda_id, cliente, status, liberado_em)
-         VALUES ($1, $2, $3, $4) RETURNING *`,
+        `INSERT INTO pedidos (comanda_id, cliente, status, liberado_em, origem, usuario_id)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
         [comanda.id, cliente || null,
          esperaPagamento ? 'aguardando' : 'novo',
-         esperaPagamento ? null : new Date()]
+         esperaPagamento ? null : new Date(),
+         origem, req.usuario ? req.usuario.id : null]
       );
 
       const gravados = [];
@@ -426,17 +510,48 @@ router.post('/pedidos', async (req, res) => {
         const qtd = Number(item.quantidade || 1);
         if (!(qtd > 0)) { const e = new Error('Quantidade inválida.'); e.status = 400; throw e; }
 
+        // Adicionais: o preco vem do BANCO, nunca do que o celular mandou. O
+        // corpo da requisicao so diz quais ids foram escolhidos.
+        const escolhidos = Array.isArray(item.adicionais) ? item.adicionais.map(Number) : [];
+        let extras = [];
+        if (escolhidos.length) {
+          const ad = await cx.query(
+            `SELECT a.id, a.nome, a.preco FROM adicionais a
+               JOIN produto_adicionais pa ON pa.adicional_id = a.id
+              WHERE a.id = ANY($1) AND pa.produto_id = $2 AND a.ativo`,
+            [escolhidos, prod.rows[0].idnomeproduto]
+          );
+          if (ad.rows.length !== escolhidos.length) {
+            const e = new Error('Adicional inválido para esse produto.'); e.status = 400; throw e;
+          }
+          extras = ad.rows;
+        }
+
+        // O preco gravado no item e o UNITARIO FINAL (base + adicionais). Assim
+        // todo total do sistema -- comanda, caixa, financeiro -- continua sendo
+        // preco x quantidade, sem nenhuma consulta nova e sem risco de um deles
+        // esquecer de somar o adicional.
+        const unitario = extras.reduce((s, a) => s + Number(a.preco), Number(prod.rows[0].precoproduto));
+
         const i = await cx.query(
           `INSERT INTO pedido_itens (pedido_id, produto_id, nome, preco, quantidade, observacao)
            VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
           [p.rows[0].id, prod.rows[0].idnomeproduto, prod.rows[0].nomeproduto,
-           prod.rows[0].precoproduto, qtd, item.observacao || null]
+           unitario, qtd, item.observacao || null]
         );
-        gravados.push(i.rows[0]);
+        for (const a of extras) {
+          await cx.query(
+            `INSERT INTO pedido_item_adicionais (pedido_item_id, adicional_id, nome, preco)
+             VALUES ($1, $2, $3, $4)`,
+            [i.rows[0].id, a.id, a.nome, a.preco]
+          );
+        }
+        gravados.push(Object.assign(i.rows[0], { adicionais: extras }));
       }
-      return { pedido: p.rows[0], itens: gravados, comanda };
+      return { pedido: p.rows[0], itens: gravados, comanda, comandaNova: abertura.criada };
     });
 
+    if (criado.comandaNova) eventos.emitir('comanda:aberta', { comanda: criado.comanda });
     eventos.emitir('pedido:criado', criado);
     if (!esperaPagamento) {
       eventos.emitir('pedido:liberado', Object.assign({ motivo: 'confirmado' }, criado));
@@ -472,8 +587,9 @@ router.get('/cozinha', async (req, res) => {
       `SELECT it.* FROM pedido_itens it JOIN pedidos p ON p.id = it.pedido_id
         WHERE p.status IN ('novo', 'preparo', 'pronto') ORDER BY it.id`
     );
+    const comExtras = await comAdicionais(itens.rows);
     res.json(r.rows.map((p) =>
-      Object.assign(p, { itens: itens.rows.filter((i) => i.pedido_id === p.id) })));
+      Object.assign(p, { itens: comExtras.filter((i) => i.pedido_id === p.id) })));
   } catch (e) { erro(res, e, 'Erro ao carregar a fila da cozinha'); }
 });
 
@@ -497,27 +613,257 @@ Object.keys(PASSOS).forEach((destino) => {
       if (!r.rows.length) {
         return res.status(409).json({ message: 'O pedido não está em um estado que permita isso.' });
       }
-      eventos.emitir('pedido:' + destino, { pedido: r.rows[0] });
+      eventos.emitir('pedido:' + destino, { pedido: r.rows[0], usuario: req.usuario || null });
       res.json(r.rows[0]);
     } catch (e) { erro(res, e, 'Erro ao mudar o pedido de etapa'); }
   });
 });
 
+// Cancelar exige MOTIVO. Pedido que some sem explicacao e o buraco por onde
+// passa tanto o erro honesto quanto o desvio: no fim do dia ninguem sabe se a
+// comida foi feita, jogada fora ou levada embora.
 router.post('/pedidos/:id/cancelar', async (req, res) => {
+  const motivo = (req.body && req.body.motivo ? String(req.body.motivo) : '').trim();
+  if (motivo.length < 3) {
+    return res.status(400).json({ message: 'Informe o motivo do cancelamento.' });
+  }
   try {
     const r = await query(
-      `UPDATE pedidos SET status = 'cancelado'
-        WHERE id = $1 AND status IN ('aguardando', 'novo', 'preparo') RETURNING *`,
-      [Number(req.params.id)]
+      `UPDATE pedidos SET status = 'cancelado', cancelado_em = now(), cancelado_motivo = $2
+        WHERE id = $1 AND status IN ('aguardando', 'novo', 'preparo', 'pronto') RETURNING *`,
+      [Number(req.params.id), motivo]
     );
     if (!r.rows.length) {
-      return res.status(409).json({ message: 'Pedido já pronto, entregue ou cancelado.' });
+      return res.status(409).json({ message: 'Pedido já entregue ou já cancelado.' });
     }
     const itens = await query('SELECT * FROM pedido_itens WHERE pedido_id = $1', [r.rows[0].id]);
-    // O estoque escuta para devolver o que ja tinha baixado.
-    eventos.emitir('pedido:cancelado', { pedido: r.rows[0], itens: itens.rows });
+    // O estoque escuta para devolver o que ja tinha baixado. O pedido continua
+    // na comanda, marcado como cancelado -- some do total, nao do historico.
+    eventos.emitir('pedido:cancelado', {
+      pedido: r.rows[0], itens: itens.rows, motivo, usuario: req.usuario || null,
+    });
     res.json(r.rows[0]);
   } catch (e) { erro(res, e, 'Erro ao cancelar o pedido'); }
 });
 
-module.exports = { router, liberarPedido, totalComanda };
+// ------------------------------------------------- adicionais nos itens
+// Uma consulta para o lote inteiro. Buscar por item daria N+1 consultas numa
+// tela (cozinha, comanda) que recarrega a cada poucos segundos.
+async function comAdicionais(itens) {
+  if (!itens.length) return itens;
+  const ids = itens.map((i) => i.id);
+  const r = await query(
+    'SELECT * FROM pedido_item_adicionais WHERE pedido_item_id = ANY($1) ORDER BY id', [ids]
+  );
+  return itens.map((i) =>
+    Object.assign(i, { adicionais: r.rows.filter((a) => a.pedido_item_id === i.id) }));
+}
+
+// ----------------------------------------------------------------- salao
+// A visao central do garcom e do gerente: uma linha por mesa, com o que decide
+// para onde ir primeiro. Tudo em DUAS consultas -- uma por mesa seria uma
+// consulta por mesa a cada 10 segundos num salao de 40 mesas.
+router.get('/salao', async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT m.id, m.numero, m.area, m.ativa, m.qr_token IS NOT NULL AS tem_qr,
+              c.id AS comanda_id, c.aberta_em,
+              EXTRACT(EPOCH FROM (now() - c.aberta_em))::int AS segundos_aberta,
+              (SELECT COUNT(*)::int FROM pedidos p
+                WHERE p.comanda_id = c.id AND p.status <> 'cancelado') AS pedidos,
+              (SELECT COUNT(*)::int FROM pedidos p
+                WHERE p.comanda_id = c.id AND p.status IN ('novo', 'preparo')) AS em_producao,
+              (SELECT COUNT(*)::int FROM pedidos p
+                WHERE p.comanda_id = c.id AND p.status = 'pronto') AS prontos,
+              (SELECT COUNT(*)::int FROM pedidos p
+                WHERE p.comanda_id = c.id AND p.status = 'aguardando') AS aguardando_pagamento
+         FROM mesas m
+         LEFT JOIN comandas c ON c.mesa_id = m.id AND c.status = 'aberta'
+        ORDER BY m.area, m.numero`
+    );
+    const ch = await query(
+      `SELECT mesa_id, tipo, status, criado_em FROM chamados
+        WHERE status <> 'resolvido' ORDER BY criado_em`
+    );
+
+    const mesas = [];
+    for (const m of r.rows) {
+      const chamados = ch.rows.filter((c) => c.mesa_id === m.id);
+      // Ordem de urgencia, de cima para baixo. O que grita mais alto ganha a
+      // cor da mesa: nao adianta mostrar "ocupada" quando ela chamou o garcom.
+      let situacao = 'livre';
+      if (chamados.some((c) => c.tipo === 'fechamento')) situacao = 'fechamento';
+      else if (chamados.some((c) => c.tipo === 'atendimento')) situacao = 'atendimento';
+      else if (m.prontos > 0) situacao = 'pronto';
+      else if (m.em_producao > 0) situacao = 'preparo';
+      else if (m.aguardando_pagamento > 0) situacao = 'aguardando_pagamento';
+      else if (m.comanda_id) situacao = 'ocupada';
+
+      mesas.push(Object.assign(m, {
+        situacao,
+        chamados,
+        totais: m.comanda_id ? await totalComanda(m.comanda_id) : null,
+      }));
+    }
+    res.json(mesas);
+  } catch (e) { erro(res, e, 'Erro ao carregar o salão'); }
+});
+
+// -------------------------------------------------------------- chamados
+// Aberto pelo cliente (pelo token do QR) e resolvido pelo salao.
+router.post('/qr/:token/chamado', async (req, res) => {
+  const tipo = (req.body && req.body.tipo) || 'atendimento';
+  if (!['atendimento', 'fechamento'].includes(tipo)) {
+    return res.status(400).json({ message: 'Tipo deve ser atendimento ou fechamento.' });
+  }
+  try {
+    const m = await query('SELECT * FROM mesas WHERE qr_token = $1 AND ativa', [req.params.token]);
+    if (!m.rows.length) return res.status(404).json({ message: 'Este QR code não está mais válido.' });
+
+    if (tipo === 'fechamento' && !(await cfg.ligado('operacao.cliente_fecha'))) {
+      return res.status(409).json({ message: 'Peça o fechamento ao garçom.' });
+    }
+
+    const c = await query(
+      "SELECT id FROM comandas WHERE mesa_id = $1 AND status = 'aberta'", [m.rows[0].id]
+    );
+
+    // Chamar duas vezes nao cria dois alertas: o segundo toque so reaproveita o
+    // que ja esta piscando no salao.
+    const existe = await query(
+      `SELECT * FROM chamados WHERE mesa_id = $1 AND tipo = $2 AND status <> 'resolvido'`,
+      [m.rows[0].id, tipo]
+    );
+    if (existe.rows.length) {
+      return res.json({ chamado: existe.rows[0], ja_existia: true });
+    }
+
+    const r = await query(
+      'INSERT INTO chamados (mesa_id, comanda_id, tipo) VALUES ($1, $2, $3) RETURNING *',
+      [m.rows[0].id, c.rows[0] ? c.rows[0].id : null, tipo]
+    );
+    eventos.emitir('chamado:aberto', { chamado: r.rows[0], mesa: m.rows[0] });
+    res.status(201).json({ chamado: r.rows[0] });
+  } catch (e) { erro(res, e, 'Erro ao chamar o atendimento'); }
+});
+
+router.get('/chamados', async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT ch.*, m.numero AS mesa, m.area, u.login AS usuario,
+              EXTRACT(EPOCH FROM (now() - ch.criado_em))::int AS segundos
+         FROM chamados ch
+         JOIN mesas m ON m.id = ch.mesa_id
+         LEFT JOIN usuarios u ON u.id = ch.usuario_id
+        WHERE ch.status <> 'resolvido' ORDER BY ch.criado_em`
+    );
+    res.json(r.rows);
+  } catch (e) { erro(res, e, 'Erro ao listar os chamados'); }
+});
+
+router.post('/chamados/:id/assumir', async (req, res) => {
+  try {
+    const r = await query(
+      `UPDATE chamados SET status = 'assumido', usuario_id = $2, atendido_em = now()
+        WHERE id = $1 AND status = 'aberto' RETURNING *`,
+      [Number(req.params.id), req.usuario ? req.usuario.id : null]
+    );
+    if (!r.rows.length) return res.status(409).json({ message: 'Esse chamado já foi atendido.' });
+    eventos.emitir('chamado:assumido', { chamado: r.rows[0], usuario: req.usuario || null });
+    res.json(r.rows[0]);
+  } catch (e) { erro(res, e, 'Erro ao assumir o chamado'); }
+});
+
+router.post('/chamados/:id/resolver', async (req, res) => {
+  try {
+    const r = await query(
+      `UPDATE chamados SET status = 'resolvido', atendido_em = COALESCE(atendido_em, now())
+        WHERE id = $1 AND status <> 'resolvido' RETURNING *`,
+      [Number(req.params.id)]
+    );
+    if (!r.rows.length) return res.status(409).json({ message: 'Esse chamado já está resolvido.' });
+    eventos.emitir('chamado:resolvido', { chamado: r.rows[0] });
+    res.json(r.rows[0]);
+  } catch (e) { erro(res, e, 'Erro ao resolver o chamado'); }
+});
+
+// ------------------------------------------------------------ historico
+router.get('/comandas/:id/historico', async (req, res) => {
+  try {
+    res.json(await auditoria.daComanda(Number(req.params.id)));
+  } catch (e) { erro(res, e, 'Erro ao carregar o histórico'); }
+});
+
+// ----------------------------------------------------- tempo real (SSE)
+// Cozinha, salao e a tela do cliente deixam de depender de um botao Atualizar.
+//
+// O que viaja e so o NOME do evento e os ids -- quem recebe recarrega o que lhe
+// interessa. Mandar o objeto inteiro significaria manter dois formatos em
+// sincronia (o da rota e o do evento) e vazaria dado de uma mesa para a tela de
+// outra.
+const inscritos = new Set();
+
+function difunde(evento, dados) {
+  if (!inscritos.size) return;
+  const pedido = dados.pedido || {};
+  const chamado = dados.chamado || {};
+  const corpo = JSON.stringify({
+    evento,
+    pedido_id: pedido.id || null,
+    comanda_id: pedido.comanda_id || chamado.comanda_id || (dados.comanda && dados.comanda.id) || null,
+    mesa_id: chamado.mesa_id || (dados.comanda && dados.comanda.mesa_id) || null,
+    em: new Date().toISOString(),
+  });
+  for (const i of inscritos) {
+    // Inscrito com filtro so recebe o que e da mesa dele.
+    if (i.comandaId && JSON.parse(corpo).comanda_id !== i.comandaId) continue;
+    try { i.res.write('data: ' + corpo + '\n\n'); } catch (e) { inscritos.delete(i); }
+  }
+}
+
+['pedido:criado', 'pedido:liberado', 'pedido:preparo', 'pedido:pronto', 'pedido:entregue',
+ 'pedido:cancelado', 'comanda:aberta', 'comanda:fechada', 'pagamento:registrado',
+ 'chamado:aberto', 'chamado:assumido', 'chamado:resolvido']
+  .forEach((nome) => eventos.on(nome, (dados) => difunde(nome, dados)));
+
+function abreFluxo(req, res, comandaId) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    // Sem isto, proxy com buffer segura os eventos e entrega tudo junto no fim.
+    'X-Accel-Buffering': 'no',
+  });
+  res.write('retry: 3000\n\n');
+
+  const inscrito = { res, comandaId: comandaId || null };
+  inscritos.add(inscrito);
+
+  // Batida de 25 s: sem trafego, proxy e celular em 4G derrubam a conexao
+  // ociosa por volta de 30 s e a tela congela sem avisar.
+  const bate = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch (e) { /* o close abaixo limpa */ }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(bate);
+    inscritos.delete(inscrito);
+  });
+}
+
+router.get('/stream', (req, res) => abreFluxo(req, res, null));
+
+router.get('/qr/:token/stream', async (req, res) => {
+  try {
+    const m = await query('SELECT id FROM mesas WHERE qr_token = $1 AND ativa', [req.params.token]);
+    if (!m.rows.length) return res.status(404).json({ message: 'QR inválido.' });
+    const c = await query(
+      "SELECT id FROM comandas WHERE mesa_id = $1 AND status = 'aberta'", [m.rows[0].id]
+    );
+    // Sem comanda aberta ainda: escuta tudo e filtra na tela. O primeiro pedido
+    // do cliente cria a comanda, e ai ele reabre o fluxo com o filtro certo.
+    abreFluxo(req, res, c.rows[0] ? c.rows[0].id : null);
+  } catch (e) { erro(res, e, 'Erro ao abrir o acompanhamento'); }
+});
+
+module.exports = { router, liberarPedido, totalComanda, comAdicionais };

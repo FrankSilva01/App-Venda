@@ -17,7 +17,10 @@ const upload = require('../MulterConfig');
 // Composicao: e AQUI que o produto é montado, e so aqui. O nucleo nao conhece
 // os modulos; este arquivo conhece os quatro e decide quem entra.
 const cfg = require('./configuracoes');
+const auth = require('./auth');
 const fluxo = require('../modules/fluxo');
+const cardapio = require('../modules/cardapio');
+const usuarios = require('../modules/usuarios');
 const pagamento = require('../modules/pagamento');
 const estoque = require('../modules/estoque');
 const financeiro = require('../modules/financeiro');
@@ -39,7 +42,7 @@ function erro(res, e, msg) {
 }
 
 // ---------------------------------------------------------------- produtos
-app.post('/api/cadastrarProduto', upload.single('imagemProduto'), async (req, res) => {
+app.post('/api/cadastrarProduto', auth.exigeSessao('cardapio'), upload.single('imagemProduto'), async (req, res) => {
   const { nomeProduto, precoProduto, descricaoProduto, quantidadeProduto, categoria } = req.body;
   if (!nomeProduto || !precoProduto || !descricaoProduto || !quantidadeProduto || !categoria || !req.file) {
     return res.status(400).json({ message: 'Todos os campos devem ser preenchidos.' });
@@ -72,7 +75,7 @@ app.get('/produtos', async (req, res) => {
   }
 });
 
-app.delete('/produtos/:idnomeProduto', async (req, res) => {
+app.delete('/produtos/:idnomeProduto', auth.exigeSessao('cardapio'), async (req, res) => {
   try {
     const r = await query('DELETE FROM produtos WHERE idnomeProduto = $1', [req.params.idnomeProduto]);
     if (!r.rowCount) return res.status(404).json({ message: 'Produto não encontrado' });
@@ -85,7 +88,7 @@ app.delete('/produtos/:idnomeProduto', async (req, res) => {
 // Liga e desliga o item no cardapio. E o controle de disponibilidade do modo
 // SEM estoque -- e continua valendo com o estoque ligado, para o gerente poder
 // tirar do ar um prato que tem insumo mas acabou de queimar.
-app.patch('/produtos/:id/disponibilidade', async (req, res) => {
+app.patch('/produtos/:id/disponibilidade', auth.exigeSessao('cardapio'), async (req, res) => {
   const { disponivel } = req.body || {};
   if (typeof disponivel !== 'boolean') {
     return res.status(400).json({ message: 'Envie disponivel: true ou false.' });
@@ -108,17 +111,16 @@ app.patch('/produtos/:id/disponibilidade', async (req, res) => {
 // o tempo a cada ponto.
 const CUSTO_BCRYPT = 10;
 
-// Hash DE VERDADE, de uma senha aleatoria que ninguem conhece, so para o login
-// de usuario inexistente gastar o mesmo tempo do que existe.
-//
-// A primeira tentativa usou uma string inventada no formato do bcrypt. Nao
-// funcionou: hash malformado e recusado na hora, sem calcular nada, e a medicao
-// mostrou 7 ms contra 60 ms -- ou seja, o tempo de resposta continuava dizendo
-// quais logins existem. So um hash valido obriga o bcrypt a fazer o trabalho.
-const HASH_FALSO = bcrypt.hashSync(
-  Math.random().toString(36) + Date.now(), CUSTO_BCRYPT);
-
+// Era cadastro PUBLICO: qualquer um com o endereco da API criava conta. Agora
+// so funciona enquanto a instalacao nao tem nenhum usuario -- e o primeiro
+// administrador, que nasce com perfil admin. Depois disso quem cria conta e o
+// administrador, em /api/usuarios.
 app.post('/api/cadastrarUsuario', async (req, res) => {
+  if (!(await auth.modoInstalacao())) {
+    return res.status(409).json({
+      message: 'O cadastro público está fechado. Peça a um administrador para criar seu usuário.',
+    });
+  }
   const { login, email, senha, cpf } = req.body;
   if (!login || !email || !senha || !cpf) {
     return res.status(400).json({ message: 'Todos os campos devem ser preenchidos.' });
@@ -145,46 +147,52 @@ app.post('/api/cadastrarUsuario', async (req, res) => {
 
 // POST e nao GET: a senha ia na QUERYSTRING, e querystring fica no historico do
 // navegador, no Referer e no log de qualquer proxy pelo caminho. No corpo, nao.
+// Login. Agora devolve TOKEN DE SESSAO e perfil -- antes so dizia "confere" e
+// o painel acreditava, sem nada no servidor sabendo quem estava logado.
 app.post('/api/login', async (req, res) => {
   const { login, senha } = req.body || {};
   if (!login || !senha) return res.status(400).json({ message: 'Informe login e senha.' });
   try {
-    const r = await query(
-      'SELECT id, login, email, cpf, senha FROM usuarios WHERE login = $1',
-      [login]
-    );
-    const u = r.rows[0];
-    // bcrypt.compare mesmo sem usuario: responder na hora quando o login nao
-    // existe revela QUAIS logins existem, pelo tempo da resposta.
-    const confere = await bcrypt.compare(String(senha), u ? u.senha : HASH_FALSO);
-    if (!u || !confere) {
-      // Uma mensagem so para os dois casos, pela mesma razao.
-      return res.status(401).json({ message: 'Login ou senha não conferem.' });
-    }
-    res.json({ id: u.id, login: u.login, email: u.email, cpf: u.cpf });
+    const sessao = await auth.entrar(login, senha);
+    // Login inexistente, senha errada e usuario desativado dao a MESMA resposta.
+    // Diferenciar entrega quais logins existem e quem foi desligado.
+    if (!sessao) return res.status(401).json({ message: 'Login ou senha não conferem.' });
+    res.json(sessao);
   } catch (e) {
     erro(res, e, 'Erro ao verificar os dados de login');
   }
 });
 
-// A rota antiga recebia a senha pela URL. Fica avisando, para quem tiver codigo
-// velho apontando para ela descobrir o porque em vez de ver um 404 silencioso.
-app.get('/api/usuarios', (req, res) => {
-  res.status(410).json({
-    message: 'Removida: a senha ia na URL. Use POST /api/login com login e senha no corpo.'
-  });
+// Quem sou eu: o painel chama no boot para saber se a sessao guardada ainda
+// vale e quais areas desenhar no menu.
+app.get('/api/sessao', async (req, res) => {
+  try {
+    const instalacao = await auth.modoInstalacao();
+    const u = await auth.daSessao((req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+    if (!u) return res.status(401).json({ message: 'Sem sessão.', instalacao });
+    res.json({ usuario: u, areas: auth.PERFIS[u.perfil] || [], instalacao: false });
+  } catch (e) { erro(res, e, 'Erro ao conferir a sessão'); }
+});
+
+app.delete('/api/sessao', async (req, res) => {
+  try {
+    await auth.sair((req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+    res.json({ message: 'Sessão encerrada.' });
+  } catch (e) { erro(res, e, 'Erro ao sair'); }
 });
 
 // ------------------------------------------------ configuracao e modulos
 // A configuracao e do nucleo: e a tela que liga e desliga os modulos, entao ela
 // nao pode morar dentro de nenhum deles.
+// Leitura aberta: a tela do cliente precisa saber se mostra "pagar agora" e
+// como se chama a casa. Sao decisoes de interface, nao segredo.
 app.get('/api/configuracoes', async (req, res) => {
   try {
     res.json(await cfg.todas());
   } catch (e) { erro(res, e, 'Erro ao ler as configurações'); }
 });
 
-app.put('/api/configuracoes', async (req, res) => {
+app.put('/api/configuracoes', auth.exigeSessao('config'), async (req, res) => {
   try {
     res.json(await cfg.salvar(req.body || {}));
   } catch (e) {
@@ -195,8 +203,44 @@ app.put('/api/configuracoes', async (req, res) => {
   }
 });
 
+// ------------------------------------------------------------ permissao
+// As rotas do NUCLEO sao montadas em dois grupos:
+//
+//   a) o que o cliente da mesa usa (tudo sob /api/qr/:token e a criacao de
+//      pedido) fica aberto -- o token do QR e a credencial dele;
+//   b) o resto exige sessao, cada rota com a area do perfil que a enxerga.
+//
+// A ordem importa: express casa a primeira que bater, entao os middlewares de
+// area vem ANTES do router do fluxo.
+app.use('/api/qr', auth.identifica);
+
+// Criar pedido e o unico verbo compartilhado: o cliente faz pelo token, o
+// garcom faz logado. `identifica` carimba quem foi sem barrar ninguem.
+app.post('/api/pedidos', auth.identifica);
+
+[['/api/salao', 'salao'],
+ ['/api/chamados', 'salao'],
+ ['/api/mesas', 'mesas'],
+ ['/api/mesa', 'salao'],
+ ['/api/cozinha', 'cozinha'],
+ ['/api/stream', null]].forEach(([caminho, area]) => app.use(caminho, auth.exigeSessao(area)));
+
+// Mudar etapa do pedido e cancelar: basta estar logado (a cozinha avanca, o
+// garcom entrega, o caixa cancela).
+app.use('/api/pedidos/:id', auth.exigeSessao());
+
+// A comanda e dos dois lados, e por isso nao da para resolver com uma area so:
+// LER a conta o garcom precisa ("quanto deu?"), mas lancar pagamento, mexer no
+// serviço e fechar e do caixa.
+app.use('/api/comandas', (req, res, next) => {
+  const soLeitura = req.method === 'GET' && /^\/\d+(\/historico)?$/.test(req.path);
+  return auth.exigeSessao(soLeitura ? ['caixa', 'salao'] : 'caixa')(req, res, next);
+});
+
 // O nucleo esta sempre no ar.
 app.use('/api', fluxo.router);
+app.use('/api/cardapio', auth.exigeSessao('cardapio'), cardapio.router);
+app.use('/api/usuarios', auth.exigeSessao('usuarios'), usuarios.router);
 
 // Os modulos tambem sao montados sempre -- quem decide e o middleware, a cada
 // requisicao. Montar so no boot obrigaria a reiniciar a API para ligar um
@@ -214,9 +258,10 @@ function exigeModulo(nome) {
   };
 }
 
-app.use('/api/pagamento', exigeModulo('pagamento'), pagamento.router);
-app.use('/api/estoque', exigeModulo('estoque'), estoque.router);
-app.use('/api/financeiro', exigeModulo('financeiro'), financeiro.router);
+// Pagar pelo app e do cliente (token do QR) e tambem do caixa: so identifica.
+app.use('/api/pagamento', auth.identifica, exigeModulo('pagamento'), pagamento.router);
+app.use('/api/estoque', auth.exigeSessao('cardapio'), exigeModulo('estoque'), estoque.router);
+app.use('/api/financeiro', auth.exigeSessao('relatorios'), exigeModulo('financeiro'), financeiro.router);
 
 // Para saber se a API esta de pe sem precisar de banco com dado dentro.
 app.get('/health', async (req, res) => {
@@ -244,6 +289,11 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log('API do App-Venda na porta ' + port);
+  auth.limpaSessoes();
+  // Uma vez por dia basta: sessao vencida nao autentica ninguem, a limpeza e so
+  // para a tabela nao crescer para sempre. unref() para o timer nao segurar o
+  // processo no ar quando alguem derrubar a API.
+  setInterval(auth.limpaSessoes, 24 * 3600 * 1000).unref();
 });
 
 module.exports = app;

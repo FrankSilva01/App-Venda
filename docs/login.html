@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entrar — App-Venda</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  /* O login fica FORA do painel: antes era uma aba dentro dele, o que obrigava
+     a desenhar o menu administrativo para quem ainda nao provou quem e. */
+  body { display: flex; align-items: center; justify-content: center; padding: 20px; min-height: 100vh; }
+  .caixa { width: 100%; max-width: 380px; }
+  .caixa .cartao { margin: 0; }
+</style>
+</head>
+<body>
+<div class="caixa">
+  <div style="text-align:center;margin-bottom:18px">
+    <h1 id="titulo">App-Venda</h1>
+    <p class="nota" style="margin:4px 0 0">Painel do restaurante</p>
+  </div>
+
+  <div class="cartao">
+    <div id="msg"></div>
+    <div id="formulario">
+      <div style="margin-bottom:12px">
+        <label for="login">Usuário</label>
+        <input id="login" autocomplete="username" autofocus>
+      </div>
+      <div style="margin-bottom:16px">
+        <label for="senha">Senha</label>
+        <input id="senha" type="password" autocomplete="current-password">
+      </div>
+      <button class="btn largo" id="entrar">Entrar</button>
+    </div>
+  </div>
+
+  <details style="margin-top:14px">
+    <summary class="nota" style="cursor:pointer">Endereço da API</summary>
+    <div class="cartao magro" style="margin-top:8px">
+      <label for="api">A API roda na máquina do restaurante</label>
+      <input id="api" spellcheck="false">
+      <p class="nota" style="margin:8px 0 0">Guardado neste navegador.</p>
+    </div>
+  </details>
+</div>
+
+<script src="comum.js"></script>
+<script>
+(async function () {
+  $('#api').value = API;
+  $('#api').onchange = function () { guardaApi(this.value); };
+
+  // Instalacao nova (nenhum usuario no banco): em vez de pedir um login que
+  // ninguem tem, o formulario vira "criar o primeiro administrador".
+  var instalacao = false;
+  try {
+    var r = await fetch(API + '/api/sessao', { headers: cabecalhos() });
+    if (r.ok) return location.replace('index.html');       // sessao ainda vale
+    instalacao = (await r.json()).instalacao;
+  } catch (e) {
+    aviso('#msg', 'erro', 'Não consegui falar com a API em ' + API + '.');
+  }
+
+  if (instalacao) {
+    $('#titulo').textContent = 'Primeiro acesso';
+    $('#formulario').insertAdjacentHTML('beforeend',
+      '<p class="nota" style="margin:12px 0 0">Nenhum usuário cadastrado ainda. ' +
+      'O que você criar agora será o administrador.</p>');
+    $('#entrar').textContent = 'Criar administrador';
+  }
+
+  $('#entrar').onclick = async function () {
+    var b = this;
+    b.disabled = true;
+    try {
+      if (instalacao) {
+        await api('/api/cadastrarUsuario', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            login: $('#login').value, senha: $('#senha').value,
+            email: $('#login').value + '@local', cpf: 'primeiro-admin',
+          }),
+        });
+      }
+      var s = await api('/api/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login: $('#login').value, senha: $('#senha').value }),
+      });
+      guardaSessao(s);
+      location.replace('index.html');
+    } catch (e) {
+      aviso('#msg', 'erro', e.message);
+      b.disabled = false;
+    }
+  };
+
+  $('#senha').onkeydown = function (ev) { if (ev.key === 'Enter') $('#entrar').click(); };
+})();
+</script>
+</body>
+</html>

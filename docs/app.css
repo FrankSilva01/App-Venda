@@ -1,0 +1,227 @@
+/* Estilo compartilhado por login.html, index.html (admin) e mesa.html (cliente).
+   Um arquivo so: antes cada pagina tinha o seu <style>, e o verde do cliente ja
+   estava diferente do verde do painel.
+
+   Direcao: fundo claro, verde como cor da experiencia, cartao de borda suave,
+   pouca decoracao. O que tem cor forte e o que exige acao. */
+
+:root {
+  --ink: #16181D;
+  --papel: #FFFFFF;
+  --fundo: #F7F8F7;
+  --quente: #F2F1EE;
+  --linha: #E4E3DE;
+  --linha-fraca: #F0EFEB;
+  --suave: #6B6E75;
+  --verde: #0F7B4F;
+  --verde-escuro: #0A5E3B;
+  --verde-fraco: #F1F8F4;
+  --verde-borda: #CFE6DA;
+  --laranja: #B4420E;
+  --laranja-fraco: #FDF2EB;
+  --azul: #1F4E8C;
+  --azul-fraco: #EEF3FA;
+  --vermelho: #B3261E;
+  --vermelho-fraco: #FBECEA;
+  --raio: 14px;
+  --sombra: 0 1px 2px rgba(22, 24, 29, .04), 0 8px 24px rgba(22, 24, 29, .04);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--fundo);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { margin: 0; letter-spacing: -.012em; }
+h1 { font-size: 23px; }
+h2 { font-size: 16px; }
+a { color: var(--verde); }
+
+/* ----------------------------------------------------------- estrutura */
+.painel { display: flex; min-height: 100vh; }
+
+.lateral {
+  width: 232px; flex: none; background: var(--papel);
+  border-right: 1px solid var(--linha); display: flex; flex-direction: column;
+  padding: 18px 0; position: sticky; top: 0; height: 100vh;
+}
+.marca { padding: 0 20px 18px; font-weight: 800; font-size: 18px; }
+.marca small { display: block; font-weight: 400; font-size: 12px; color: var(--suave); }
+.menu { display: flex; flex-direction: column; gap: 2px; padding: 0 10px; }
+.menu a {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: 10px; color: #4E5159; font-size: 14px; font-weight: 500;
+  text-decoration: none; min-height: 42px;
+}
+.menu a:hover { background: var(--quente); }
+.menu a.on { background: var(--ink); color: #fff; }
+.menu a .sino {
+  margin-left: auto; background: var(--vermelho); color: #fff; border-radius: 999px;
+  font-size: 11px; font-weight: 700; padding: 1px 7px;
+}
+.menu a.on .sino { background: #fff; color: var(--ink); }
+
+.conteudo { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.topo {
+  display: flex; align-items: center; gap: 14px; padding: 18px 24px;
+  border-bottom: 1px solid var(--linha); background: var(--papel);
+  position: sticky; top: 0; z-index: 10;
+}
+.topo .quem { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.topo .avatar {
+  width: 32px; height: 32px; border-radius: 999px; background: var(--ink); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px;
+}
+.corpo { padding: 20px 24px 32px; flex: 1; }
+
+/* -------------------------------------------------------------- cartao */
+.cartao {
+  background: var(--papel); border: 1px solid var(--linha); border-radius: var(--raio);
+  padding: 18px; margin-bottom: 16px;
+}
+.cartao > h2 { margin-bottom: 14px; }
+.cartao.magro { padding: 14px; }
+
+.grade { display: grid; gap: 14px; }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.auto { grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); }
+.linha { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.entre { display: flex; align-items: center; gap: 12px; }
+.empurra { margin-left: auto; }
+
+/* ------------------------------------------------------------ controles */
+label { display: block; font-size: 12.5px; font-weight: 600; color: var(--suave); margin: 0 0 5px; }
+input, select, textarea {
+  width: 100%; background: var(--papel); color: var(--ink);
+  border: 1px solid var(--linha); border-radius: 10px; padding: 10px 12px;
+  font: inherit; min-height: 42px;
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--verde-borda); border-color: var(--verde); }
+input[readonly] { background: var(--quente); }
+textarea { min-height: 80px; resize: vertical; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border: 0; background: var(--verde); color: #fff; border-radius: 10px;
+  padding: 0 16px; min-height: 42px; font: inherit; font-weight: 600; cursor: pointer;
+  text-decoration: none; white-space: nowrap;
+}
+.btn:hover { background: var(--verde-escuro); }
+.btn.sec { background: var(--papel); color: var(--ink); border: 1px solid var(--linha); }
+.btn.sec:hover { background: var(--quente); }
+.btn.escuro { background: var(--ink); }
+.btn.perigo { background: var(--vermelho); }
+.btn.pequeno { min-height: 34px; padding: 0 11px; font-size: 13px; }
+.btn.largo { width: 100%; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* --------------------------------------------------------------- chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; border-radius: 999px;
+  padding: 3px 10px; font-size: 12px; font-weight: 600;
+  background: var(--quente); color: #4E5159;
+}
+.chip.verde { background: var(--verde-fraco); color: var(--verde-escuro); }
+.chip.azul { background: var(--azul-fraco); color: var(--azul); }
+.chip.laranja { background: var(--laranja-fraco); color: var(--laranja); }
+.chip.vermelho { background: var(--vermelho-fraco); color: var(--vermelho); }
+.chip.ink { background: var(--ink); color: #fff; }
+
+.filtros { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 14px; }
+.filtros button {
+  border: 1px solid var(--linha); background: var(--papel); color: var(--ink);
+  border-radius: 999px; padding: 7px 14px; font: inherit; font-size: 13px;
+  cursor: pointer; min-height: 36px;
+}
+.filtros button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+/* -------------------------------------------------------------- tabela */
+.tabela { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tabela th {
+  text-align: left; font-size: 11.5px; font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--suave); padding: 10px 12px;
+  border-bottom: 1px solid var(--linha-fraca); white-space: nowrap;
+}
+.tabela td { padding: 12px; border-bottom: 1px solid var(--linha-fraca); vertical-align: middle; }
+.tabela tr:last-child td { border-bottom: 0; }
+.tabela .acoes { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+/* Tabela larga em tela estreita rola sozinha, sem empurrar a pagina inteira. */
+.rolagem { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+.item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 0;
+  border-bottom: 1px solid var(--linha-fraca); font-size: 14px;
+}
+.item:last-child { border-bottom: 0; }
+
+.total {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding-top: 12px; margin-top: 6px; border-top: 1px solid var(--linha); font-weight: 700;
+}
+.total b { font-size: 21px; }
+
+.vazio { text-align: center; color: var(--suave); padding: 34px 12px; }
+.nota { font-size: 12.5px; color: var(--suave); line-height: 1.45; }
+
+.aviso { border-radius: 10px; padding: 11px 14px; margin-bottom: 14px; font-size: 13.5px; }
+.aviso.ok { background: var(--verde-fraco); color: var(--verde-escuro); }
+.aviso.erro { background: var(--vermelho-fraco); color: var(--vermelho); }
+.aviso.info { background: var(--laranja-fraco); color: var(--laranja); }
+
+/* --------------------------------------------------------------- toast */
+.toasts {
+  position: fixed; right: 16px; bottom: 16px; z-index: 60;
+  display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 32px);
+}
+.toast {
+  background: var(--ink); color: #fff; border-radius: 12px; padding: 12px 14px;
+  font-size: 13.5px; box-shadow: var(--sombra); display: flex; align-items: center; gap: 12px;
+}
+.toast .btn { min-height: 32px; padding: 0 12px; font-size: 13px; }
+
+/* -------------------------------------------------------------- gaveta */
+.gaveta {
+  position: fixed; inset: 0; background: rgba(22, 24, 29, .35); z-index: 50;
+  display: flex; justify-content: flex-end;
+}
+.gaveta > div {
+  width: min(520px, 100%); background: var(--fundo); height: 100%; overflow-y: auto;
+  padding: 18px; border-left: 1px solid var(--linha);
+}
+.gaveta header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+
+/* ------------------------------------------------------- responsividade */
+@media (max-width: 1023px) {
+  /* Tablet e celular: a lateral vira barra de cima. Garçom usa de pé, com uma
+     mão -- menu lateral de 232px comeria metade da tela. */
+  .painel { flex-direction: column; }
+  .lateral {
+    width: 100%; height: auto; position: static; flex-direction: row; align-items: center;
+    gap: 8px; padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--linha);
+    overflow-x: auto;
+  }
+  .marca { padding: 0 8px 0 4px; font-size: 16px; white-space: nowrap; }
+  .marca small { display: none; }
+  .menu { flex-direction: row; padding: 0; gap: 4px; }
+  .menu a { padding: 8px 12px; white-space: nowrap; }
+  .topo { padding: 14px 16px; }
+  .corpo { padding: 16px; }
+  .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .g2, .g3, .g4 { grid-template-columns: minmax(0, 1fr); }
+  .corpo { padding: 12px; }
+  .cartao { padding: 14px; }
+  h1 { font-size: 20px; }
+  .toasts { left: 12px; right: 12px; bottom: 12px; }
+}
