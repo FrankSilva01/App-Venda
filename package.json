@@ -8,7 +8,8 @@
     "dev": "node --watch config/server/Server.js",
     "schema": "node config/server/aplicaSchema.js",
     "admin": "node scripts/admin.js",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "auditoria": "node scripts/auditoria-demo.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
