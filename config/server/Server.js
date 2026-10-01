@@ -36,6 +36,43 @@ app.use(express.urlencoded({ extended: true }));
 // poderem divergir de novo.
 app.use('/upload', express.static(upload.PASTA_UPLOADS));
 
+// As telas tambem saem daqui, pela MESMA origem da API.
+//
+// O GitHub Pages serve em HTTPS, e a API do restaurante roda em HTTP na rede
+// local. O navegador bloqueia chamada HTTP dentro de pagina HTTPS -- a unica
+// excecao e localhost, que e o proprio aparelho. Por isso o celular do cliente
+// abria o cardapio do Pages e falhava em TODA chamada: para ele, localhost e o
+// celular, e o IP da casa e HTTP dentro de HTTPS.
+//
+// Servindo daqui, o QR aponta para http://<ip-da-maquina>:3001/mesa.html e o
+// celular fala com a API na mesma origem: sem mistura de protocolo e sem CORS.
+// O Pages continua valendo como vitrine e para quem usa a API em localhost.
+//
+// express.static so responde por arquivo que existe, entao nao atrapalha
+// nenhuma rota da API.
+app.use(express.static(path.join(__dirname, '..', '..', 'docs')));
+
+// Enderecos pelos quais esta maquina pode ser alcancada na rede. O instalador
+// nao tem como adivinhar o IP, e errar aqui so aparece com o adesivo ja colado
+// na mesa.
+app.get('/api/rede', (req, res) => {
+  const os = require('os');
+  const faixas = [];
+  const ifaces = os.networkInterfaces();
+  Object.keys(ifaces).forEach((nome) => {
+    (ifaces[nome] || []).forEach((i) => {
+      if (i.family === 'IPv4' && !i.internal) faixas.push({ interface: nome, ip: i.address });
+    });
+  });
+  res.json({
+    porta: port,
+    enderecos: faixas.map((f) => Object.assign(f, {
+      base: 'http://' + f.ip + ':' + port,
+      cliente: 'http://' + f.ip + ':' + port + '/mesa.html',
+    })),
+  });
+});
+
 function erro(res, e, msg) {
   console.error(msg + ':', e.message);
   res.status(500).json({ error: msg });

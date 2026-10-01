@@ -3,11 +3,33 @@
 // Antes cada pagina tinha a sua copia de $(), esc(), moeda() e do fetch -- e as
 // copias ja tinham comecado a divergir no tratamento de erro.
 
-// A pagina e estatica (GitHub Pages) e conversa com a API que roda na maquina
-// do restaurante. O navegador bloqueia HTTP dentro de HTTPS, menos para
-// localhost, que o Chrome trata como origem confiavel; e o que faz este
-// arranjo funcionar sem certificado.
+// Onde fica a API, em ordem de prioridade:
+//
+//   1. a PROPRIA origem, quando a pagina veio da API (o Express serve docs/).
+//      E o caso que funciona no celular: mesma origem, sem CORS e sem HTTP
+//      dentro de HTTPS;
+//   2. o que estiver guardado neste navegador;
+//   3. localhost, para quem abre do GitHub Pages na mesma maquina da API.
+//
+// O passo 1 e o que conserta o "load failure" no celular: pelo Pages (HTTPS) o
+// navegador bloqueia chamada para a API em HTTP, e localhost, no celular, e o
+// proprio celular.
 var API = localStorage.getItem('appvenda-api') || 'http://localhost:3001';
+
+// Descobre a API antes da primeira chamada. Nao da para decidir so pelo
+// endereco da pagina: ela tanto pode vir da propria API quanto de um servidor
+// estatico qualquer na mesma maquina. Entao a gente PERGUNTA: se a origem
+// responde /health, e ela.
+async function resolveApi() {
+  if (localStorage.getItem('appvenda-api')) return API;   // escolha explicita manda
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return API;
+  if (location.hostname.indexOf('github.io') >= 0) return API;  // Pages é só estático
+  try {
+    var r = await fetch(location.origin + '/health', { cache: 'no-store' });
+    if (r.ok) API = location.origin;
+  } catch (e) { /* fica no padrão */ }
+  return API;
+}
 
 function guardaApi(url) {
   API = String(url || '').replace(/\/+$/, '');

@@ -512,6 +512,7 @@ $$('[data-v]').forEach(function (b) {
 });
 
 (async function () {
+  await resolveApi();
   if (!TOKEN) {
     $('#tituloMesa').textContent = 'QR code inválido';
     $('#subMesa').textContent = '';
@@ -525,8 +526,18 @@ $$('[data-v]').forEach(function (b) {
     $('#tituloMesa').textContent = 'Não foi possível abrir';
     $('#subMesa').textContent = '';
     $('#tela').innerHTML = '<div class="aviso erro">' + esc(e.message) + '</div>' +
-      '<p class="nota">Se o problema continuar, chame o garçom: o pedido pode ser feito ' +
-      'direto com ele, do mesmo jeito.</p>';
+      '<p class="nota">Chame o garçom: o pedido pode ser feito direto com ele, ' +
+      'do mesmo jeito.</p>' +
+      // Esta parte é para quem administra, não para o cliente -- mas é aqui que
+      // o problema aparece, e sem ela a tela só diz "falhou".
+      (/github\.io/.test(location.hostname)
+        ? '<details style="margin-top:18px"><summary class="nota">Informação técnica</summary>' +
+          '<p class="nota">Esta página está em HTTPS e a API do restaurante responde em ' +
+          'HTTP na rede local — o navegador bloqueia essa combinação. O QR precisa apontar ' +
+          'para o endereço da própria API (<code>http://IP-DA-MÁQUINA:3001/mesa.html</code>), ' +
+          'que serve esta tela na mesma origem. Ajuste em Configurações → Endereço do QR e ' +
+          'regenere os QR das mesas.</p></details>'
+        : '');
     return;
   }
 

@@ -48,6 +48,7 @@
 <script src="comum.js"></script>
 <script>
 (async function () {
+  await resolveApi();
   $('#api').value = API;
   $('#api').onchange = function () { guardaApi(this.value); };
 

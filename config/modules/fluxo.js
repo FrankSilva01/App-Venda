@@ -682,7 +682,9 @@ router.get('/salao', async (req, res) => {
         ORDER BY m.area, m.numero`
     );
     const ch = await query(
-      `SELECT mesa_id, tipo, status, criado_em FROM chamados
+      // O id precisa vir: a tela usa ele para resolver o chamado. Sem ele, o
+      // botao montava /api/chamados/undefined/resolver e nao acontecia nada.
+      `SELECT id, mesa_id, tipo, status, criado_em FROM chamados
         WHERE status <> 'resolvido' ORDER BY criado_em`
     );
 

@@ -179,8 +179,18 @@ async function abreMesa(mesaId) {
 
   if ($('#resolveChamado', c)) {
     $('#resolveChamado', c).onclick = async function () {
-      await api('/api/chamados/' + m.chamados[0].id + '/resolver', { method: 'POST' });
-      g.remove(); telaSalao(); carregaChamados();
+      this.disabled = true;
+      try {
+        await api('/api/chamados/' + m.chamados[0].id + '/resolver', { method: 'POST' });
+        g.remove();
+        telaSalao();
+        carregaChamados();
+      } catch (e) {
+        // Antes este catch nao existia: o erro subia como promessa rejeitada e
+        // o botao simplesmente nao fazia nada, sem dizer por que.
+        this.disabled = false;
+        alert(e.message);
+      }
     };
   }
   $$('[data-cancela]', c).forEach(function (b) {
@@ -712,6 +722,7 @@ async function telaMesas() {
   var mostraTecnico = CFG['dev.mostrar_enderecos'] === 'true';
 
   $('#tela').innerHTML =
+    avisoEnderecoDoQr() +
     '<div class="cartao"><div class="entre" style="flex-wrap:wrap">' +
       '<h2>Mesas</h2>' +
       '<div class="acoes empurra">' +
@@ -819,6 +830,37 @@ async function telaMesas() {
       imprime(folhaQr(m.numero, svg));
     };
   });
+}
+
+// O QR carrega um endereço fixo, impresso em papel. Quando o IP da máquina
+// muda — e com DHCP ele muda — todo adesivo colado na mesa para de funcionar, e
+// o sintoma que chega é "o cardápio não abre no celular".
+//
+// Não dá para o servidor detectar sozinho (dentro de um container ele só vê a
+// rede do container), mas dá para comparar com o endereço por onde ESTE painel
+// foi aberto: se o administrador chegou aqui por um host, aquele host existe.
+function avisoEnderecoDoQr() {
+  var alvo = CFG['cliente.url'] || '';
+  if (!alvo) return '';
+  var hostDoQr, hostDaApi;
+  try {
+    hostDoQr = new URL(alvo).host;
+    hostDaApi = new URL(API).host;
+  } catch (e) { return ''; }
+  if (hostDoQr === hostDaApi) return '';
+
+  // localhost no QR é sempre errado: no celular do cliente, localhost é o
+  // próprio celular.
+  var ehLocal = /^(localhost|127\.0\.0\.1)(:|$)/.test(hostDoQr);
+  var ehPages = /github\.io$/.test(hostDoQr.split(':')[0]);
+  return '<div class="aviso ' + (ehLocal || ehPages ? 'erro' : 'info') + '">' +
+    '<b>Os QR das mesas apontam para <code>' + esc(hostDoQr) + '</code></b>, ' +
+    'mas você está usando o sistema por <code>' + esc(hostDaApi) + '</code>. ' +
+    (ehPages
+      ? 'O GitHub Pages é HTTPS e esta API é HTTP: o celular do cliente não consegue chamá-la de lá. '
+      : (ehLocal ? 'No celular do cliente, <code>localhost</code> é o próprio celular. ' : '')) +
+    'Ajuste em <b>Configurações → Endereço do QR</b> e reimprima — ' +
+    'o token não muda, o desenho do QR já sai com o endereço novo.</div>';
 }
 
 function folhaQr(numero, svg) {
@@ -1116,17 +1158,27 @@ async function telaConfig() {
       '</div></div>';
   }
   if (aba === 'desenvolvimento') {
-    html = '<div class="cartao"><h2>Desenvolvimento</h2>' +
-      '<p class="nota">Endereços técnicos só aparecem nas telas quando isto está ligado. ' +
-        'Em produção, deixe desligado.</p><div class="linha">' +
-      campo('Mostrar endereços nas telas', 'dev.mostrar_enderecos', liga) +
+    html = '<div class="cartao"><h2>Endereço do QR</h2>' +
+      '<p class="nota">O celular do cliente precisa <b>alcançar esta API</b>. ' +
+        'Pelo GitHub Pages (HTTPS) o navegador bloqueia a chamada para uma API em HTTP — ' +
+        'por isso o caminho que funciona é o QR apontar para esta máquina, que serve ' +
+        'as telas e a API na mesma origem.</p>' +
+      '<div id="enderecos" class="nota">procurando endereços…</div>' +
+      '<div class="linha" style="margin-top:12px">' +
       texto('URL da tela do cliente', 'cliente.url', 'É o que vai dentro do QR.') +
       texto('API vista pelo celular', 'api.publica',
-        'No celular, localhost é o próprio celular: use o IP da máquina na rede.') +
+        'Em branco quando a tela e a API saem do mesmo endereço.') +
+      '</div></div>' +
+      '<div class="cartao"><h2>Desenvolvimento</h2>' +
+      '<p class="nota">Endereços técnicos só aparecem nas outras telas quando isto está ' +
+        'ligado. Em operação normal, deixe desligado.</p><div class="linha">' +
+      campo('Mostrar endereços nas telas', 'dev.mostrar_enderecos', liga) +
       '</div></div>';
   }
 
   $('#abaCfg').innerHTML = html + '<button class="btn" id="salvarCfg">Salvar</button>';
+
+  if (aba === 'desenvolvimento') listaEnderecos();
   $('#salvarCfg').onclick = async function () {
     var corpo = {};
     $$('[data-k]').forEach(function (el) { corpo[el.getAttribute('data-k')] = el.value; });
@@ -1139,6 +1191,45 @@ async function telaConfig() {
       $('#casa').textContent = CFG['geral.nome'] || 'painel';
     } catch (e) { aviso('#msgC', 'erro', e.message); }
   };
+}
+
+// Endereços pelos quais esta API pode ser alcançada.
+//
+// O primeiro da lista é o que o navegador está usando AGORA para falar com ela:
+// se o painel abriu por ele, ele funciona — não há o que adivinhar. Os outros
+// vêm do servidor, e dentro de um container são os da rede do container, não os
+// da máquina; por isso ficam como sugestão, não como verdade.
+async function listaEnderecos() {
+  var el = $('#enderecos');
+  if (!el) return;
+  var lista = [{ base: API, origem: 'o endereço por onde você abriu este painel' }];
+  try {
+    var r = await api('/api/rede');
+    r.enderecos.forEach(function (e) {
+      if (e.base !== API) lista.push({ base: e.base, origem: 'interface ' + e.interface });
+    });
+  } catch (e) { /* a lista do navegador já basta */ }
+
+  el.innerHTML = lista.map(function (e, n) {
+    return '<div class="item"><code>' + esc(e.base) + '</code>' +
+      '<span class="nota">' + esc(e.origem) + '</span>' +
+      '<button class="btn ' + (n ? 'sec ' : '') + 'pequeno empurra" data-usar="' + esc(e.base) +
+      '">Usar este</button></div>';
+  }).join('') +
+  '<p class="nota">Para o celular do cliente, use um endereço de rede (um ' +
+    '<code>192.168.…</code>), não <code>localhost</code>: no celular, localhost é o ' +
+    'próprio celular.</p>';
+
+  $$('[data-usar]').forEach(function (b) {
+    b.onclick = function () {
+      var base = b.getAttribute('data-usar');
+      $('[data-k="cliente.url"]').value = base + '/mesa.html';
+      // Mesma origem: a tela do cliente descobre a API sozinha, e deixar o
+      // campo preenchido só criaria um segundo endereço para errar.
+      $('[data-k="api.publica"]').value = '';
+      aviso('#msgC', 'ok', 'Endereço preenchido. Salve e regenere os QR das mesas.');
+    };
+  });
 }
 
 // ------------------------------------------------------------ chamados
@@ -1173,6 +1264,7 @@ window.addEventListener('hashchange', rotear);
 
 // ------------------------------------------------------------ inicio
 (async function () {
+  await resolveApi();
   if (!SESSAO) return location.replace('login.html');
   try {
     var s = await api('/api/sessao');
