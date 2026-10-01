@@ -70,8 +70,8 @@
 <body>
 <header>
   <div>
-    <h1>App-Venda</h1>
-    <div class="sub">Pedidos para restaurante</div>
+    <h1>App-Venda · administração</h1>
+    <div class="sub">Salão, cozinha, caixa e módulos. A tela do cliente é a <code>mesa.html</code>.</div>
   </div>
   <div class="api">
     <span class="pino" id="pino"></span>
@@ -83,7 +83,7 @@
 <main>
   <div id="avisoApi"></div>
   <div class="abas">
-    <button data-aba="cardapio" class="on">Mesa (QR)</button>
+    <button data-aba="mesas" class="on">Mesas e QR</button>
     <button data-aba="cozinha">Cozinha</button>
     <button data-aba="caixa">Caixa</button>
     <button data-aba="admin">Produtos</button>
@@ -101,14 +101,11 @@
 // Navegador bloqueia HTTP dentro de pagina HTTPS -- menos para localhost, que o
 // Chrome trata como origem confiavel. E por isso que este arranjo funciona.
 var API = localStorage.getItem('appvenda-api') || 'http://localhost:3001';
-var ABA = 'cardapio', PRODUTOS = [], CARRINHO = [], USUARIO = null;
+var ABA = 'mesas', PRODUTOS = [], USUARIO = null;
 
-// Mesa: numa instalacao de verdade o QR da mesa abre esta pagina com ?mesa=12 e
-// o cliente nao escolhe nada. O seletor existe para dar para testar as 16 mesas
-// de um laptop so.
-var MESA = Number(new URLSearchParams(location.search).get('mesa')) ||
-           Number(localStorage.getItem('appvenda-mesa')) || null;
-var MESAS = [], COMANDAS = [], COMANDA = null, FILA = [];
+// Esta pagina e SO administrativa. Quem pede e o cliente, na mesa.html, que abre
+// pelo QR -- por isso aqui nao ha carrinho nem seletor de mesa para pedir.
+var MESAS = [], COMANDAS = [], COMANDA = null, FILA = [], QR = null;
 
 // Espelho da configuracao do estabelecimento. A tela nao decide nada sobre
 // pagamento: ela pergunta ao servidor quais botoes existem.
@@ -159,7 +156,7 @@ function pinta(){
   // A cozinha se atualiza sozinha; sair da aba precisa parar o relogio, senao
   // ele continua batendo na API no fundo pelo resto da sessao.
   if (RELOGIO) { clearInterval(RELOGIO); RELOGIO = null; }
-  if (ABA === 'cardapio') return telaCardapio();
+  if (ABA === 'mesas')    return telaMesas();
   if (ABA === 'cozinha')  return telaCozinha();
   if (ABA === 'caixa')    return telaCaixa();
   if (ABA === 'admin')    return telaAdmin();
@@ -183,164 +180,165 @@ function modoPagamento(){
   };
 }
 
-function telaCardapio(){
-  var cats = {};
-  PRODUTOS.forEach(function(p){ if (p.categoria) cats[p.categoria] = 1; });
-  var pg = modoPagamento();
+// ------------------------------------------------------------------ mesas
+// Mesa e QR andam juntos: criar a mesa nao basta, e o adesivo que faz o cliente
+// chegar ao cardapio. Por isso gerar, regerar e revogar ficam na mesma tela.
+function telaMesas(){
   $('#tela').innerHTML =
-    '<div class="cartao">' +
-      '<div class="linha" style="grid-template-columns:auto 1fr auto;align-items:end;margin-bottom:0">' +
-        '<div><label for="fmesa">Mesa</label><select id="fmesa">' +
-          '<option value="">escolha</option>' +
-          MESAS.map(function(m){
-            return '<option value="' + m.numero + '"' + (m.numero === MESA ? ' selected' : '') + '>' +
-              'Mesa ' + m.numero + (m.comanda_id ? ' · conta aberta' : '') + '</option>';
-          }).join('') +
-        '</select></div>' +
-        '<div><label for="fcat">Categoria</label><select id="fcat">' +
-          '<option value="">Todas</option>' +
-          Object.keys(cats).sort().map(function(c){
-            return '<option>' + esc(c) + '</option>'; }).join('') +
-        '</select></div>' +
-        '<div><button class="acao sec" id="recarrega">Atualizar</button></div>' +
+    '<div class="cartao"><h2>Mesas e QR codes</h2>' +
+      '<div id="msgMesa"></div>' +
+      '<div id="listaMesas"></div>' +
+      '<div class="linha" style="grid-template-columns:140px auto;align-items:end;margin:14px 0 0">' +
+        '<div><label>Número da mesa</label><input id="mNumero" type="number" min="1"></div>' +
+        '<div><button class="acao" id="mCriar">Criar mesa</button></div>' +
       '</div>' +
-      '<div style="font-size:12.5px;color:var(--muted);margin-top:10px">' + esc(pg.texto) + '</div>' +
     '</div>' +
-    '<div class="linha" style="grid-template-columns:2fr 1fr;align-items:start">' +
-      '<div id="grade"></div>' +
-      '<div class="cartao carrinho"><h2>Meu pedido</h2>' +
-        '<div id="msgPedido"></div><div id="itens"></div></div>' +
+    '<div id="qrAberto"></div>' +
+    '<div class="cartao"><h2>Para onde o QR aponta</h2>' +
+      '<div id="msgUrl"></div>' +
+      '<p style="color:var(--muted);font-size:13px;margin-top:0">' +
+        'O QR leva o celular do cliente até a tela de pedidos. Trocar estes endereços ' +
+        'muda os QR codes <b>que ainda vão ser gerados</b> — os já impressos continuam ' +
+        'apontando para o endereço antigo.</p>' +
+      '<div style="margin-bottom:12px"><label>Tela do cliente</label>' +
+        '<input id="uCliente" value="' + esc(CFG['cliente.url'] || '') + '"></div>' +
+      '<div style="margin-bottom:14px"><label>API vista pelo celular ' +
+        '<span style="font-weight:400;color:var(--muted)">(em branco = o navegador decide)</span></label>' +
+        '<input id="uApi" value="' + esc(CFG['api.publica'] || '') + '" ' +
+          'placeholder="http://192.168.0.10:3001"></div>' +
+      '<button class="acao" id="uSalvar">Salvar endereços</button>' +
+      '<p style="color:var(--muted);font-size:12.5px;margin-bottom:0">' +
+        'No celular do cliente, <code>localhost</code> é o próprio celular — por isso, para ' +
+        'testar com um telefone de verdade, use o IP da sua máquina na rede.</p>' +
     '</div>';
-  $('#fmesa').onchange = function(){
-    MESA = Number(this.value) || null;
-    if (MESA) localStorage.setItem('appvenda-mesa', MESA);
-    pintaCarrinho();
-  };
-  $('#fcat').onchange = function(){ carregaProdutos(this.value); };
-  $('#recarrega').onclick = function(){ carregaProdutos($('#fcat').value); };
-  pintaGrade();
-  pintaCarrinho();
-}
 
-function pintaGrade(){
-  var g = $('#grade');
-  if (!g) return;
-  if (!PRODUTOS.length){
-    g.innerHTML = '<div class="vazio">Nenhum produto cadastrado ainda.</div>';
-    return;
-  }
-  g.innerHTML = '<div class="grade">' + PRODUTOS.map(function(p){
-    return '<div class="prod">' +
-      (p.imagemproduto
-        ? '<img src="' + API + '/upload/' + encodeURIComponent(p.imagemproduto) + '" alt="">'
-        : '<img alt="">') +
-      '<div class="corpo">' +
-        (p.categoria ? '<span class="cat">' + esc(p.categoria) + '</span>' : '') +
-        '<span class="nome">' + esc(p.nomeproduto) + '</span>' +
-        '<span class="desc">' + esc(p.descricaoproduto || '') + '</span>' +
-        '<span class="preco">' + moeda(p.precoproduto) + '</span>' +
-      '</div>' +
-      '<div class="pe"><button class="acao" data-add="' + p.idnomeproduto + '" ' +
-        'style="flex:1">Adicionar</button></div>' +
-    '</div>';
-  }).join('') + '</div>';
-  g.querySelectorAll('[data-add]').forEach(function(b){
-    b.onclick = function(){ addCarrinho(Number(b.getAttribute('data-add'))); };
-  });
-}
+  pintaMesas();
 
-function addCarrinho(id){
-  var p = PRODUTOS.filter(function(x){ return x.idnomeproduto === id; })[0];
-  if (!p) return;
-  var ja = CARRINHO.filter(function(x){ return x.id === id; })[0];
-  if (ja) ja.qtd++;
-  else CARRINHO.push({ id: id, nome: p.nomeproduto, preco: Number(p.precoproduto), qtd: 1 });
-  pintaCarrinho();
-}
-
-function pintaCarrinho(){
-  var el = $('#itens');
-  if (!el) return;
-  if (!CARRINHO.length){
-    el.innerHTML = '<div class="vazio" style="padding:14px">Nada por aqui ainda.</div>';
-    return;
-  }
-  var pg = modoPagamento();
-  var total = CARRINHO.reduce(function(s, i){ return s + i.preco * i.qtd; }, 0);
-  el.innerHTML = CARRINHO.map(function(i){
-    return '<div style="padding:7px 0;border-bottom:1px solid var(--line)">' +
-      '<div class="item" style="border:0;padding:0"><b>' + i.qtd + '×</b> ' + esc(i.nome) +
-        '<span style="color:var(--muted)">' + moeda(i.preco * i.qtd) + '</span>' +
-        '<button class="x" data-rm="' + i.id + '" title="Tirar">×</button></div>' +
-      // A observacao e por item e vai literal para a cozinha: e o "sem cebola"
-      // que hoje se perde entre o cliente, o garcom e o cozinheiro.
-      '<input data-obs="' + i.id + '" placeholder="observação (ex: sem cebola)" ' +
-        'value="' + esc(i.obs || '') + '" style="margin-top:5px;font-size:12.5px;padding:6px 9px">' +
-    '</div>';
-  }).join('') +
-  '<div class="total"><span>Total</span><span>' + moeda(total) + '</span></div>' +
-  '<div style="margin-top:12px"><label>Seu nome</label>' +
-    '<input id="pedCliente" placeholder="só para a cozinha saber de quem é"></div>' +
-  '<div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">' +
-    (pg.exigePagar
-      ? '<button class="acao" id="bPagarEnviar">Pagar e enviar</button>'
-      : '<button class="acao" id="bEnviar">Enviar para a cozinha</button>' +
-        (pg.podePagarAgora ? '<button class="acao sec" id="bPagarEnviar">Prefiro pagar agora</button>' : '')) +
-  '</div>';
-
-  el.querySelectorAll('[data-rm]').forEach(function(b){
-    b.onclick = function(){
-      var id = Number(b.getAttribute('data-rm'));
-      CARRINHO = CARRINHO.filter(function(x){ return x.id !== id; });
-      pintaCarrinho();
-    };
-  });
-  el.querySelectorAll('[data-obs]').forEach(function(c){
-    c.oninput = function(){
-      var id = Number(c.getAttribute('data-obs'));
-      CARRINHO.forEach(function(x){ if (x.id === id) x.obs = c.value; });
-      // De proposito sem repintar: repintar a cada tecla tira o foco do campo.
-    };
-  });
-  if ($('#bEnviar'))      $('#bEnviar').onclick      = function(){ enviaPedido(false); };
-  if ($('#bPagarEnviar')) $('#bPagarEnviar').onclick = function(){ enviaPedido(true); };
-}
-
-async function enviaPedido(pagarAgora){
-  if (!MESA) return aviso('#msgPedido', 'erro', 'Escolha a mesa primeiro.');
-  var botoes = document.querySelectorAll('#itens button.acao');
-  botoes.forEach(function(b){ b.disabled = true; });
-  try {
-    var r = await api('/api/pedidos', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mesa: MESA,
-        cliente: ($('#pedCliente') || {}).value || null,
-        pagar_agora: !!pagarAgora,
-        itens: CARRINHO.map(function(i){
-          return { produto_id: i.id, quantidade: i.qtd, observacao: i.obs || null };
-        })
-      })
-    });
-
-    // Pedido que espera pagamento so entra na cozinha depois desta chamada.
-    if (!r.na_cozinha) {
-      await api('/api/pagamento/pedido/' + r.pedido.id, {
+  $('#mCriar').onclick = async function(){
+    try {
+      await api('/api/mesas', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ forma: 'pix' })
+        body: JSON.stringify({ numero: Number($('#mNumero').value) })
       });
-    }
+      await carregaBase();
+      pinta();
+    } catch (e) { aviso('#msgMesa', 'erro', e.message); }
+  };
 
-    CARRINHO = [];
-    await carregaBase();
-    pinta();
-    aviso('#msgPedido', 'ok',
-      (r.aviso ? r.aviso + ' ' : '') +
-      'Pedido na cozinha. Conta da mesa: ' + moeda(r.totais.total) + '.');
-  } catch (e) {
-    aviso('#msgPedido', 'erro', e.message);
-    botoes.forEach(function(b){ b.disabled = false; });
+  $('#uSalvar').onclick = async function(){
+    try {
+      CFG = await api('/api/configuracoes', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 'cliente.url': $('#uCliente').value, 'api.publica': $('#uApi').value })
+      });
+      aviso('#msgUrl', 'ok', 'Endereços salvos.');
+    } catch (e) { aviso('#msgUrl', 'erro', e.message); }
+  };
+}
+
+function pintaMesas(){
+  var el = $('#listaMesas');
+  if (!el) return;
+  if (!MESAS.length){
+    el.innerHTML = '<div class="vazio">Nenhuma mesa ainda. O QR precisa de uma.</div>';
+    return;
   }
+  el.innerHTML = MESAS.map(function(m){
+    return '<div class="item" style="flex-wrap:wrap">' +
+      '<b style="min-width:70px">Mesa ' + m.numero + '</b>' +
+      '<span style="color:var(--muted);font-size:12.5px;min-width:110px">' +
+        (m.comanda_id ? 'conta aberta' : 'livre') + '</span>' +
+      '<span class="cat" style="background:' + (m.qr_token ? '' : 'transparent') + '">' +
+        (m.qr_token ? 'QR ativo' : 'sem QR') + '</span>' +
+      '<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">' +
+        (m.qr_token
+          ? '<button class="acao sec" data-ver="' + m.id + '" style="padding:5px 11px;font-size:12.5px">Ver</button>' +
+            '<button class="acao sec" data-gerar="' + m.id + '" style="padding:5px 11px;font-size:12.5px">Regerar</button>' +
+            '<button class="acao sec perigo" data-revogar="' + m.id + '" style="padding:5px 11px;font-size:12.5px;color:#fff">Excluir QR</button>'
+          : '<button class="acao" data-gerar="' + m.id + '" style="padding:5px 11px;font-size:12.5px">Gerar QR</button>') +
+      '</span></div>';
+  }).join('');
+
+  el.querySelectorAll('[data-gerar]').forEach(function(b){
+    b.onclick = async function(){
+      var id = Number(b.getAttribute('data-gerar'));
+      // Regerar invalida o adesivo que esta colado na mesa: confirma antes.
+      var tinha = MESAS.filter(function(m){ return m.id === id; })[0].qr_token;
+      if (tinha && !confirm('Gerar outro QR faz o adesivo atual parar de funcionar. Continuar?')) return;
+      try {
+        QR = await api('/api/mesas/' + id + '/qrcode', { method: 'POST' });
+        await carregaBase();
+        pinta();
+        mostraQr();
+      } catch (e) { aviso('#msgMesa', 'erro', e.message); }
+    };
+  });
+
+  el.querySelectorAll('[data-revogar]').forEach(function(b){
+    b.onclick = async function(){
+      if (!confirm('Excluir o QR desta mesa? O adesivo impresso deixa de abrir.')) return;
+      try {
+        var r = await api('/api/mesas/' + b.getAttribute('data-revogar') + '/qrcode', { method: 'DELETE' });
+        QR = null;
+        await carregaBase();
+        pinta();
+        aviso('#msgMesa', 'ok', r.message);
+      } catch (e) { aviso('#msgMesa', 'erro', e.message); }
+    };
+  });
+
+  el.querySelectorAll('[data-ver]').forEach(function(b){
+    b.onclick = async function(){
+      var id = Number(b.getAttribute('data-ver'));
+      var m = MESAS.filter(function(x){ return x.id === id; })[0];
+      try {
+        // Pede o SVG pronto ao servidor: desenhar QR no navegador exigiria uma
+        // biblioteca a mais, e a pagina nao tem build nem CDN.
+        var svg = await (await fetch(API + '/api/mesas/' + id + '/qrcode.svg')).text();
+        QR = { mesa: m, svg: svg, url: null };
+        mostraQr();
+      } catch (e) { aviso('#msgMesa', 'erro', e.message); }
+    };
+  });
+}
+
+function mostraQr(){
+  var el = $('#qrAberto');
+  if (!el || !QR) return;
+  var url = QR.url || ((CFG['cliente.url'] || '') + '?t=' + QR.mesa.qr_token +
+    (CFG['api.publica'] ? '&api=' + encodeURIComponent(CFG['api.publica']) : ''));
+  el.innerHTML =
+    '<div class="cartao"><h2>QR da mesa ' + QR.mesa.numero + '</h2>' +
+      '<div class="linha" style="grid-template-columns:200px 1fr;align-items:start">' +
+        '<div id="qrDesenho" style="background:#fff;border-radius:12px;padding:10px"></div>' +
+        '<div>' +
+          '<label>Endereço dentro do QR</label>' +
+          '<input readonly value="' + esc(url) + '" onclick="this.select()">' +
+          '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">' +
+            '<button class="acao sec" id="qrImprimir">Imprimir</button>' +
+            '<button class="acao sec" id="qrAbrir">Abrir a tela do cliente</button>' +
+            '<button class="acao sec" id="qrFechar">Fechar</button>' +
+          '</div>' +
+          '<p style="color:var(--muted);font-size:12.5px">Imprima, plastifique e cole na mesa. ' +
+            'Se o adesivo for fotografado por alguém de fora, é só <b>regerar</b>: o antigo morre na hora.</p>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  // innerHTML com SVG vindo do servidor: o conteudo e gerado pela biblioteca de
+  // QR a partir da URL, nao e texto de usuario.
+  $('#qrDesenho').innerHTML = QR.svg;
+  $('#qrFechar').onclick = function(){ QR = null; $('#qrAberto').innerHTML = ''; };
+  $('#qrAbrir').onclick = function(){ window.open(url, '_blank'); };
+  $('#qrImprimir').onclick = function(){
+    var j = window.open('', '_blank');
+    j.document.write('<!doctype html><title>Mesa ' + QR.mesa.numero + '</title>' +
+      '<style>body{font:16px system-ui;text-align:center;padding:40px}' +
+      'svg{width:280px;height:280px}h1{font-size:34px;margin:0 0 6px}</style>' +
+      '<h1>Mesa ' + QR.mesa.numero + '</h1><p>Aponte a câmera para pedir</p>' + QR.svg);
+    j.document.close();
+    j.focus();
+    j.print();
+  };
 }
 
 function telaAdmin(){
@@ -647,17 +645,6 @@ function telaConfig(){
         (CFG['servico.percentual'] || '10') + '"></div><div></div></div>' +
       '<button class="acao" id="cfgSalvar">Salvar</button>' +
     '</div>' +
-    '<div class="cartao"><h2>Mesas</h2>' +
-      '<div id="msgMesa"></div>' +
-      '<div style="margin-bottom:12px">' + (MESAS.length
-        ? MESAS.map(function(m){ return '<span class="cat" style="margin-right:6px">' +
-            m.numero + (m.comanda_id ? ' · aberta' : '') + '</span>'; }).join('')
-        : '<span style="color:var(--muted)">Nenhuma mesa ainda. O QR precisa de uma.</span>') + '</div>' +
-      '<div class="linha" style="grid-template-columns:140px auto;align-items:end;margin-bottom:0">' +
-        '<div><label>Número</label><input id="mNumero" type="number" min="1"></div>' +
-        '<div><button class="acao" id="mCriar">Criar mesa</button></div>' +
-      '</div>' +
-    '</div>' +
     '<div class="cartao"><h2>Como fica o fluxo</h2>' +
       '<div style="line-height:2">' +
         '1 · QR da mesa<br>2 · Pedido confirmado<br>' +
@@ -672,17 +659,6 @@ function telaConfig(){
         'Financeiro: ' + (CFG['financeiro.ativo'] === 'true' ? 'lê, não bloqueia' : 'desligado') +
       '</div>' +
     '</div>';
-
-  $('#mCriar').onclick = async function(){
-    try {
-      await api('/api/mesas', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ numero: Number($('#mNumero').value) })
-      });
-      await carregaBase();
-      pinta();
-    } catch (e) { aviso('#msgMesa', 'erro', e.message); }
-  };
 
   $('#cfgSalvar').onclick = async function(){
     var corpo = { 'servico.percentual': $('#cfg_servico').value };
@@ -752,7 +728,6 @@ async function carregaProdutos(categoria){
   } catch (e) {
     PRODUTOS = [];
   }
-  pintaGrade();
   pintaLista();
 }
 

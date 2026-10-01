@@ -13,6 +13,13 @@ const PADRAO = {
   'estoque.modo': 'desligado',
   'financeiro.ativo': 'true',
   'servico.percentual': '10',
+  // Endereco da tela do cliente -- e o que vai dentro do QR da mesa. Em
+  // producao e a URL publica; em teste, o http://localhost:... da sua maquina.
+  'cliente.url': 'https://franksilva01.github.io/App-Venda/mesa.html',
+  // Endereco da API visto pelo CELULAR do cliente. Em branco, a tela do cliente
+  // usa o que estiver guardado no navegador. Nao da para adivinhar: a API roda
+  // na maquina do restaurante e "localhost" no celular e o proprio celular.
+  'api.publica': '',
 };
 
 const VALORES = {
@@ -23,6 +30,15 @@ const VALORES = {
 };
 
 let cache = null;
+
+// Erro de VALIDACAO, marcado. O Server devolve 400 para estes e 500 para o
+// resto. A versao anterior adivinhava pela mensagem, com uma regex sobre o
+// texto -- bastou acrescentar uma frase nova para um 400 virar 500.
+function recusa(mensagem) {
+  const e = new Error(mensagem);
+  e.validacao = true;
+  return e;
+}
 
 async function todas() {
   if (cache) return cache;
@@ -57,24 +73,33 @@ async function salvar(mudancas) {
   const novo = Object.assign({}, atual);
 
   Object.keys(mudancas).forEach((chave) => {
-    if (!(chave in PADRAO)) throw new Error('Configuração desconhecida: ' + chave);
+    if (!(chave in PADRAO)) throw recusa('Configuração desconhecida: ' + chave);
     const valor = String(mudancas[chave]);
     if (VALORES[chave] && VALORES[chave].indexOf(valor) < 0) {
-      throw new Error('Valor inválido para ' + chave + ': ' + valor);
+      throw recusa('Valor inválido para ' + chave + ': ' + valor);
     }
     novo[chave] = valor;
   });
 
   const pct = Number(novo['servico.percentual']);
   if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
-    throw new Error('Percentual de serviço deve ficar entre 0 e 100.');
+    throw recusa('Percentual de serviço deve ficar entre 0 e 100.');
+  }
+
+  // URL torta vira QR que nao abre nada -- e so se descobre com o adesivo ja
+  // colado na mesa.
+  if (!/^https?:\/\/.+/.test(novo['cliente.url'])) {
+    throw recusa('A URL da tela do cliente precisa começar com http:// ou https://.');
+  }
+  if (novo['api.publica'] && !/^https?:\/\/.+/.test(novo['api.publica'])) {
+    throw recusa('O endereço público da API precisa começar com http:// ou https://.');
   }
 
   // Combinacao que nao fecha: "so entra na cozinha depois de pago" com a cobranca
   // desligada significa pedido que nunca chega na cozinha. Barra aqui, com o
   // motivo, em vez de deixar a casa descobrir no movimento.
   if (novo['pagamento.modo'] === 'antecipado' && novo['pagamento.integrado'] !== 'true') {
-    throw new Error('Pagamento antecipado exige o módulo de pagamento integrado ligado.');
+    throw recusa('Pagamento antecipado exige o módulo de pagamento integrado ligado.');
   }
 
   for (const chave of Object.keys(mudancas)) {

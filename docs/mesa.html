@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cardápio da mesa</title>
+<style>
+  /* Tela do CLIENTE. Separada do admin de proposito: quem senta na mesa nao
+     pode ver cozinha, caixa nem configuracao, e a pagina abre direto no
+     cardapio -- sem aba, sem login, sem escolher mesa (o QR ja sabe qual e). */
+  :root{
+    --ink:#16181D; --papel:#fff; --quente:#F2F1EE; --linha:#E4E3DE;
+    --suave:#6B6E75; --verde:#0F7B4F; --verde-claro:#F4FAF6; --laranja:#B4420E;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--quente);color:var(--ink);
+    font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  /* Trava a largura: num tablet a lista nao pode virar uma linha de 1200px. */
+  .tela{max-width:440px;margin:0 auto;background:var(--papel);min-height:100vh;
+    display:flex;flex-direction:column}
+  header{padding:16px 18px;border-bottom:1px solid var(--linha);
+    display:flex;align-items:center;gap:10px;position:sticky;top:0;background:var(--papel);z-index:5}
+  header b{font-size:19px;letter-spacing:-.01em}
+  header .sub{font-size:12.5px;color:var(--suave)}
+  main{flex:1;padding:14px 18px 20px}
+  .abas{display:flex;gap:6px;padding:10px 18px 0}
+  .abas button{flex:1;border:0;background:var(--quente);border-radius:10px;padding:10px;
+    font:inherit;font-size:13.5px;font-weight:600;color:var(--suave);cursor:pointer}
+  .abas button.on{background:var(--ink);color:#fff}
+  .cat{display:flex;gap:7px;overflow-x:auto;padding-bottom:12px;margin-bottom:4px}
+  .cat button{border:1px solid var(--linha);background:var(--papel);border-radius:999px;
+    padding:7px 14px;font:inherit;font-size:13px;white-space:nowrap;cursor:pointer;color:var(--ink)}
+  .cat button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .item{display:flex;gap:12px;border:1px solid var(--linha);border-radius:14px;padding:12px;
+    margin-bottom:10px;align-items:flex-start;width:100%;text-align:left;background:var(--papel);
+    font:inherit;color:inherit;cursor:pointer}
+  .item img{width:72px;height:72px;border-radius:10px;object-fit:cover;background:var(--quente);flex:none}
+  .item .nome{font-weight:600;font-size:15px}
+  .item .desc{font-size:12.5px;color:var(--suave);margin-top:2px;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .item .preco{font-weight:700;margin-top:5px}
+  .linha{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #F0EFEB}
+  .qtd{min-width:26px;height:26px;border-radius:7px;background:var(--ink);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex:none}
+  /* block + fit-content: a observacao desce para a linha de baixo e o balao
+     para no tamanho do texto. Inline, ela colava no nome do prato. */
+  .obs{font-size:12.5px;color:#7A3A12;background:#FBEDE3;border-radius:5px;padding:2px 7px;
+    display:block;width:fit-content;margin-top:4px}
+  .total{display:flex;justify-content:space-between;align-items:baseline;
+    padding-top:12px;margin-top:4px;border-top:1px solid var(--linha);font-weight:700}
+  .total b{font-size:21px}
+  button.acao{width:100%;border:0;background:var(--verde);color:#fff;border-radius:12px;
+    min-height:50px;font:inherit;font-size:15.5px;font-weight:600;cursor:pointer}
+  button.acao.sec{background:var(--papel);color:var(--ink);border:1px solid var(--linha);min-height:46px;
+    font-size:14.5px}
+  button.acao:disabled{opacity:.55}
+  input,textarea,select{width:100%;border:1px solid var(--linha);border-radius:11px;padding:12px;
+    font:inherit;font-size:15px;color:var(--ink);background:var(--papel)}
+  label{display:block;font-size:13px;font-weight:600;margin:0 0 6px}
+  .nota{font-size:12.5px;color:var(--suave);line-height:1.45}
+  .vazio{text-align:center;color:var(--suave);padding:40px 10px}
+  .aviso{border-radius:11px;padding:12px 14px;margin-bottom:14px;font-size:13.5px}
+  .aviso.ok{background:var(--verde-claro);color:#0A5E3B}
+  .aviso.erro{background:#FBEDE3;color:#8E3A0C}
+  .passo{display:flex;gap:12px}
+  .passo .bola{width:22px;height:22px;border-radius:999px;border:2px solid var(--linha);flex:none;
+    display:flex;align-items:center;justify-content:center}
+  .passo .bola.feito{background:var(--verde);border-color:var(--verde)}
+  .passo .bola.agora{background:var(--laranja);border-color:var(--laranja)}
+  .passo .traco{width:2px;flex:1;background:var(--linha);margin:2px auto;min-height:18px}
+  .rodape{position:sticky;bottom:0;background:var(--papel);border-top:1px solid var(--linha);
+    padding:12px 18px calc(12px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:8px}
+</style>
+</head>
+<body>
+<div class="tela">
+  <header>
+    <div style="flex:1">
+      <b id="tituloMesa">Carregando…</b>
+      <div class="sub" id="subMesa">lendo o QR da mesa</div>
+    </div>
+  </header>
+  <div class="abas" id="abas" hidden>
+    <button data-v="cardapio" class="on">Cardápio</button>
+    <button data-v="comanda">Comanda</button>
+    <button data-v="pedidos">Meus pedidos</button>
+  </div>
+  <main id="tela"></main>
+  <div class="rodape" id="rodape" hidden></div>
+</div>
+
+<script>
+// Esta pagina e estatica (GitHub Pages) e conversa com a API do restaurante.
+//
+// Tres coisas chegam pela URL do QR:
+//   ?t=TOKEN   obrigatorio -- e o que diz QUAL mesa e. Nao e o numero da mesa:
+//              numero da pra adivinhar trocando um digito, e nao da para revogar.
+//   ?api=URL   opcional -- endereco da API visto pelo celular do cliente.
+var P = new URLSearchParams(location.search);
+var TOKEN = P.get('t') || '';
+
+// Precedencia: o que veio no QR manda, porque e o unico endereco que o dono do
+// restaurante controla. Depois o que ficou guardado, e por ultimo o padrao de
+// desenvolvimento.
+var API = P.get('api') || localStorage.getItem('appvenda-api') || 'http://localhost:3001';
+if (P.get('api')) localStorage.setItem('appvenda-api', API);
+
+var DADOS = null, CARRINHO = [], VISTA = 'cardapio', CATEGORIA = '', ABERTO = null, RELOGIO = null;
+
+var $ = function (s) { return document.querySelector(s); };
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function moeda(v){ return 'R$ ' + Number(v||0).toFixed(2).replace('.', ','); }
+
+async function api(caminho, opcoes){
+  var r = await fetch(API + caminho, opcoes);
+  var txt = await r.text();
+  var d = null;
+  try { d = txt ? JSON.parse(txt) : null; } catch (e) { d = { message: txt }; }
+  if (!r.ok) throw new Error((d && (d.message || d.error)) || ('HTTP ' + r.status));
+  return d;
+}
+
+async function carrega(){
+  DADOS = await api('/api/qr/' + encodeURIComponent(TOKEN));
+}
+
+// ------------------------------------------------------------------ telas
+function pinta(){
+  if (RELOGIO) { clearInterval(RELOGIO); RELOGIO = null; }
+  document.querySelectorAll('[data-v]').forEach(function(b){
+    b.className = b.getAttribute('data-v') === VISTA ? 'on' : '';
+  });
+  $('#rodape').hidden = true;
+  $('#rodape').innerHTML = '';
+  if (ABERTO) return telaItem();
+  if (VISTA === 'cardapio') return telaCardapio();
+  if (VISTA === 'comanda')  return telaComanda();
+  return telaPedidos();
+}
+
+function telaCardapio(){
+  var cats = [];
+  DADOS.produtos.forEach(function(p){
+    if (p.categoria && cats.indexOf(p.categoria) < 0) cats.push(p.categoria);
+  });
+  var lista = DADOS.produtos.filter(function(p){
+    return !CATEGORIA || p.categoria === CATEGORIA;
+  });
+
+  $('#tela').innerHTML =
+    (cats.length > 1 ? '<div class="cat">' +
+      '<button data-cat=""' + (CATEGORIA ? '' : ' class="on"') + '>Tudo</button>' +
+      cats.map(function(c){
+        return '<button data-cat="' + esc(c) + '"' + (CATEGORIA === c ? ' class="on"' : '') + '>' +
+          esc(c) + '</button>';
+      }).join('') + '</div>' : '') +
+    (lista.length ? lista.map(function(p){
+      return '<button class="item" data-p="' + p.idnomeproduto + '">' +
+        (p.imagemproduto
+          ? '<img src="' + API + '/upload/' + encodeURIComponent(p.imagemproduto) + '" alt="">'
+          : '<img alt="">') +
+        '<span style="flex:1;min-width:0">' +
+          '<span class="nome">' + esc(p.nomeproduto) + '</span>' +
+          '<span class="desc">' + esc(p.descricaoproduto || '') + '</span>' +
+          '<span class="preco">' + moeda(p.precoproduto) + '</span>' +
+        '</span></button>';
+    }).join('') : '<div class="vazio">Nada disponível no momento.</div>');
+
+  document.querySelectorAll('[data-cat]').forEach(function(b){
+    b.onclick = function(){ CATEGORIA = b.getAttribute('data-cat'); pinta(); };
+  });
+  document.querySelectorAll('[data-p]').forEach(function(b){
+    b.onclick = function(){ ABERTO = { id: Number(b.getAttribute('data-p')), qtd: 1, obs: '' }; pinta(); };
+  });
+
+  if (CARRINHO.length) {
+    var n = CARRINHO.reduce(function(s, i){ return s + i.qtd; }, 0);
+    $('#rodape').hidden = false;
+    $('#rodape').innerHTML = '<button class="acao" id="irComanda">Ver comanda · ' + n +
+      (n > 1 ? ' itens' : ' item') + '</button>';
+    $('#irComanda').onclick = function(){ VISTA = 'comanda'; pinta(); };
+  }
+}
+
+// Escolher o item e uma tela, nao um modal: no celular, modal com teclado
+// aberto empurra o botao para fora da area visivel.
+function telaItem(){
+  var p = DADOS.produtos.filter(function(x){ return x.idnomeproduto === ABERTO.id; })[0];
+  if (!p) { ABERTO = null; return pinta(); }
+
+  $('#tela').innerHTML =
+    '<button class="acao sec" id="voltar" style="width:auto;padding:0 14px;margin-bottom:14px">← Voltar</button>' +
+    '<h1 style="font-size:21px;margin:0 0 6px">' + esc(p.nomeproduto) + '</h1>' +
+    '<p class="nota" style="margin:0 0 10px">' + esc(p.descricaoproduto || '') + '</p>' +
+    '<div style="font-size:19px;font-weight:700;margin-bottom:18px">' + moeda(p.precoproduto) + '</div>' +
+    '<label for="obs">Alguma observação?</label>' +
+    '<textarea id="obs" rows="3" placeholder="ex: sem cebola">' + esc(ABERTO.obs) + '</textarea>' +
+    '<p class="nota" style="margin:6px 0 0">Vai escrito na comanda da cozinha, do jeito que você digitar.</p>';
+
+  $('#voltar').onclick = function(){ ABERTO = null; pinta(); };
+  $('#obs').oninput = function(){ ABERTO.obs = this.value; };
+
+  $('#rodape').hidden = false;
+  $('#rodape').innerHTML =
+    '<div style="display:flex;gap:10px;align-items:center">' +
+      '<div style="display:flex;align-items:center;border:1px solid var(--linha);border-radius:11px">' +
+        '<button class="acao sec" id="menos" style="width:44px;border:0;min-height:46px">−</button>' +
+        '<span id="qtd" style="min-width:30px;text-align:center;font-weight:700">' + ABERTO.qtd + '</span>' +
+        '<button class="acao sec" id="mais" style="width:44px;border:0;min-height:46px">+</button>' +
+      '</div>' +
+      '<button class="acao" id="add" style="flex:1">Adicionar ' +
+        moeda(p.precoproduto * ABERTO.qtd) + '</button>' +
+    '</div>';
+
+  function troca(d){
+    ABERTO.qtd = Math.max(1, ABERTO.qtd + d);
+    $('#qtd').textContent = ABERTO.qtd;
+    $('#add').textContent = 'Adicionar ' + moeda(p.precoproduto * ABERTO.qtd);
+  }
+  $('#menos').onclick = function(){ troca(-1); };
+  $('#mais').onclick = function(){ troca(1); };
+  $('#add').onclick = function(){
+    // Mesmo produto com observacao diferente e OUTRA linha: juntar faria a
+    // cozinha receber "2x bolinho, sem cebola" quando um deles leva cebola.
+    var ja = CARRINHO.filter(function(x){ return x.id === p.idnomeproduto && x.obs === ABERTO.obs; })[0];
+    if (ja) ja.qtd += ABERTO.qtd;
+    else CARRINHO.push({ id: p.idnomeproduto, nome: p.nomeproduto,
+                         preco: Number(p.precoproduto), qtd: ABERTO.qtd, obs: ABERTO.obs });
+    ABERTO = null;
+    VISTA = 'cardapio';
+    pinta();
+  };
+}
+
+function telaComanda(){
+  var pg = DADOS.pagamento;
+  var meu = CARRINHO.reduce(function(s, i){ return s + i.preco * i.qtd; }, 0);
+
+  $('#tela').innerHTML =
+    '<div id="msg"></div>' +
+    (CARRINHO.length
+      ? '<div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;' +
+          'color:var(--suave);margin-bottom:4px">Enviando agora</div>' +
+        CARRINHO.map(function(i, n){
+          return '<div class="linha"><span class="qtd">' + i.qtd + '</span>' +
+            '<span style="flex:1;min-width:0">' + esc(i.nome) +
+              (i.obs ? '<span class="obs">' + esc(i.obs) + '</span>' : '') + '</span>' +
+            '<span style="font-weight:600">' + moeda(i.preco * i.qtd) + '</span>' +
+            '<button class="acao sec" data-rm="' + n + '" style="width:auto;min-height:0;padding:4px 9px;' +
+              'font-size:18px;line-height:1;color:var(--laranja)">×</button></div>';
+        }).join('') +
+        '<div class="total"><span>Seu pedido</span><b>' + moeda(meu) + '</b></div>'
+      : '<div class="vazio">Nada escolhido ainda.</div>') +
+
+    (DADOS.pedidos && DADOS.pedidos.length
+      ? '<div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;' +
+          'color:var(--suave);margin:22px 0 4px">Já na comanda da mesa</div>' +
+        DADOS.pedidos.map(function(p){
+          return p.itens.map(function(i){
+            return '<div class="linha" style="opacity:.72"><span class="qtd" ' +
+              'style="background:var(--quente);color:var(--ink)">' + i.quantidade + '</span>' +
+              '<span style="flex:1">' + esc(i.nome) +
+                (p.cliente ? ' <span class="nota">· ' + esc(p.cliente) + '</span>' : '') + '</span>' +
+              '<span style="font-weight:600">' + moeda(i.preco * i.quantidade) + '</span></div>';
+          }).join('');
+        }).join('') +
+        (DADOS.totais
+          ? '<div style="background:var(--quente);border-radius:12px;padding:13px;margin-top:14px">' +
+              '<div style="display:flex;justify-content:space-between;font-size:14px">' +
+                '<span class="nota">Consumo da mesa</span><span>' + moeda(DADOS.totais.consumo) + '</span></div>' +
+              '<div style="display:flex;justify-content:space-between;font-size:14px;margin-top:5px">' +
+                '<span class="nota">Serviço ' + DADOS.totais.servico_percentual + '%</span>' +
+                '<span>' + moeda(DADOS.totais.servico) + '</span></div>' +
+              (DADOS.totais.pago > 0
+                ? '<div style="display:flex;justify-content:space-between;font-size:14px;margin-top:5px">' +
+                    '<span class="nota">Já pago</span><span>' + moeda(DADOS.totais.pago) + '</span></div>'
+                : '') +
+              '<div class="total" style="margin-top:9px"><span>' +
+                (DADOS.totais.pago > 0 ? 'Falta' : 'Total') + '</span><b>' +
+                moeda(DADOS.totais.pago > 0 ? DADOS.totais.saldo : DADOS.totais.total) + '</b></div>' +
+            '</div>'
+          : '')
+      : '') +
+
+    (CARRINHO.length
+      ? '<div style="margin-top:18px"><label for="cliente">Seu nome</label>' +
+          '<input id="cliente" placeholder="só para a cozinha saber de quem é" ' +
+            'value="' + esc(localStorage.getItem('appvenda-cliente') || '') + '">' +
+          '<p class="nota" style="margin:6px 0 0">Sem cadastro, sem senha.</p></div>'
+      : '');
+
+  document.querySelectorAll('[data-rm]').forEach(function(b){
+    b.onclick = function(){
+      CARRINHO.splice(Number(b.getAttribute('data-rm')), 1);
+      pinta();
+    };
+  });
+
+  if (!CARRINHO.length) {
+    // Comanda sem nada para enviar, mas com consumo: oferece pagar, se der.
+    if (pg.pode_pagar_agora && DADOS.totais && DADOS.totais.saldo > 0) {
+      $('#rodape').hidden = false;
+      $('#rodape').innerHTML =
+        '<button class="acao" id="pagarConta">Pagar ' + moeda(DADOS.totais.saldo) + ' no Pix</button>' +
+        '<p class="nota" style="text-align:center;margin:0">Ou peça a conta no caixa.</p>';
+      $('#pagarConta').onclick = pagaConta;
+    }
+    return;
+  }
+
+  $('#rodape').hidden = false;
+  $('#rodape').innerHTML =
+    (pg.exige_pagar_agora
+      ? '<button class="acao" id="bPagar">Pagar e enviar ' + moeda(meu) + '</button>' +
+        '<p class="nota" style="text-align:center;margin:0">A cozinha recebe assim que o pagamento for aprovado.</p>'
+      : '<button class="acao" id="bEnviar">Enviar para a cozinha</button>' +
+        (pg.pode_pagar_agora
+          ? '<button class="acao sec" id="bPagar">Prefiro pagar agora</button>'
+          : '') +
+        '<p class="nota" style="text-align:center;margin:0">A conta fica aberta. Você paga no fim.</p>');
+
+  if ($('#bEnviar')) $('#bEnviar').onclick = function(){ envia(false); };
+  if ($('#bPagar'))  $('#bPagar').onclick  = function(){ envia(true); };
+}
+
+function telaPedidos(){
+  var ps = (DADOS.pedidos || []);
+  if (!ps.length) {
+    $('#tela').innerHTML = '<div class="vazio">Nenhum pedido ainda.</div>';
+    return;
+  }
+  var etapas = ['novo', 'preparo', 'pronto', 'entregue'];
+  var rotulo = { aguardando: 'Aguardando pagamento', novo: 'Na fila da cozinha',
+                 preparo: 'Em preparo', pronto: 'Pronto', entregue: 'Na mesa' };
+
+  $('#tela').innerHTML = ps.map(function(p){
+    var atual = etapas.indexOf(p.status);
+    return '<div style="border:1px solid var(--linha);border-radius:14px;padding:14px;margin-bottom:12px">' +
+      '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">' +
+        '<b>Pedido #' + p.id + '</b>' +
+        '<span class="nota">' + (p.cliente ? esc(p.cliente) : '') + '</span>' +
+        '<span style="margin-left:auto;font-size:13px;font-weight:600;color:' +
+          (p.status === 'entregue' || p.status === 'pronto' ? 'var(--verde)' : 'var(--laranja)') + '">' +
+          (rotulo[p.status] || p.status) + '</span>' +
+      '</div>' +
+      p.itens.map(function(i){
+        return '<div style="font-size:14px"><b>' + i.quantidade + '×</b> ' + esc(i.nome) +
+          (i.observacao ? '<span class="obs">' + esc(i.observacao) + '</span>' : '') + '</div>';
+      }).join('') +
+      (p.status === 'aguardando'
+        ? '<div class="aviso erro" style="margin:10px 0 0">Esperando o pagamento para ir à cozinha.</div>'
+        : '<div style="display:flex;gap:6px;margin-top:12px">' +
+            etapas.map(function(e, n){
+              return '<div style="flex:1;height:5px;border-radius:999px;background:' +
+                (n <= atual ? 'var(--verde)' : 'var(--linha)') + '"></div>';
+            }).join('') +
+          '</div>' +
+          '<div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--suave);' +
+            'margin-top:5px"><span>Recebido</span><span>Preparo</span><span>Pronto</span><span>Na mesa</span></div>') +
+    '</div>';
+  }).join('') +
+  '<button class="acao sec" id="atualiza">Atualizar</button>';
+
+  $('#atualiza').onclick = recarrega;
+  // Enquanto o cliente esta nesta aba, a tela se atualiza sozinha: ele deixou o
+  // celular na mesa esperando a comida chegar.
+  RELOGIO = setInterval(recarrega, 15000);
+}
+
+// ------------------------------------------------------------------ acoes
+async function recarrega(){
+  try { await carrega(); pinta(); } catch (e) { /* mantem a tela anterior */ }
+}
+
+function trava(sim){
+  document.querySelectorAll('#rodape button').forEach(function(b){ b.disabled = sim; });
+}
+
+async function envia(pagarAgora){
+  trava(true);
+  try {
+    var nome = ($('#cliente') || {}).value || null;
+    if (nome) localStorage.setItem('appvenda-cliente', nome);
+
+    var r = await api('/api/pedidos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: TOKEN, cliente: nome, pagar_agora: !!pagarAgora,
+        itens: CARRINHO.map(function(i){
+          return { produto_id: i.id, quantidade: i.qtd, observacao: i.obs || null };
+        })
+      })
+    });
+
+    // Pedido que espera pagamento so entra na cozinha depois desta chamada.
+    if (!r.na_cozinha) {
+      await api('/api/pagamento/pedido/' + r.pedido.id, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ forma: 'pix' })
+      });
+    }
+
+    CARRINHO = [];
+    VISTA = 'pedidos';
+    await carrega();
+    pinta();
+  } catch (e) {
+    trava(false);
+    // O erro mais provavel e item que acabou entre escolher e enviar: a
+    // mensagem vem do servidor e diz qual.
+    $('#msg').innerHTML = '<div class="aviso erro">' + esc(e.message) + '</div>';
+  }
+}
+
+async function pagaConta(){
+  trava(true);
+  try {
+    await api('/api/pagamento/comanda/' + DADOS.comanda.id, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ forma: 'pix' })
+    });
+    await carrega();
+    pinta();
+    $('#msg').innerHTML = '<div class="aviso ok">Conta paga. Obrigado!</div>';
+  } catch (e) {
+    trava(false);
+    $('#msg').innerHTML = '<div class="aviso erro">' + esc(e.message) + '</div>';
+  }
+}
+
+// ------------------------------------------------------------------ carga
+document.querySelectorAll('[data-v]').forEach(function(b){
+  b.onclick = function(){ VISTA = b.getAttribute('data-v'); ABERTO = null; pinta(); };
+});
+
+(async function(){
+  if (!TOKEN) {
+    $('#tituloMesa').textContent = 'QR code inválido';
+    $('#subMesa').textContent = '';
+    $('#tela').innerHTML = '<div class="aviso erro">Esta página abre pelo QR code da mesa. ' +
+      'Peça ajuda a um atendente.</div>';
+    return;
+  }
+  try {
+    await carrega();
+  } catch (e) {
+    $('#tituloMesa').textContent = 'Não foi possível abrir';
+    $('#subMesa').textContent = '';
+    $('#tela').innerHTML = '<div class="aviso erro">' + esc(e.message) + '</div>' +
+      '<p class="nota">Se o problema continuar, chame o garçom: o pedido pode ser feito ' +
+      'direto com ele, do mesmo jeito.</p>';
+    return;
+  }
+  $('#tituloMesa').textContent = 'Mesa ' + DADOS.mesa.numero;
+  $('#subMesa').textContent = DADOS.pagamento.exige_pagar_agora
+    ? 'Peça e pague pelo celular'
+    : 'Peça pelo celular · a conta fica aberta';
+  $('#abas').hidden = false;
+  pinta();
+})();
+</script>
+</body>
+</html>

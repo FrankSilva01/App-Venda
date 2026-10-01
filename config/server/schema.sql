@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS mesas (
     ativa   BOOLEAN NOT NULL DEFAULT true
 );
 
+-- O QR da mesa carrega um TOKEN, nao o numero da mesa.
+--
+-- Com o numero na URL, qualquer pessoa na calcada pede na mesa 7 trocando um
+-- digito -- e nao haveria como "cancelar" um QR que vazou. Com token: apagar e
+-- gerar outro invalida o adesivo antigo na hora.
+ALTER TABLE mesas ADD COLUMN IF NOT EXISTS qr_token TEXT UNIQUE;
+ALTER TABLE mesas ADD COLUMN IF NOT EXISTS qr_criado_em TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS comandas (
     id         SERIAL PRIMARY KEY,
     mesa_id    INTEGER NOT NULL REFERENCES mesas (id),

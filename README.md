@@ -6,8 +6,18 @@ São **duas metades**, e elas moram em lugares diferentes:
 
 | | O que é | Onde roda |
 |---|---|---|
-| `docs/` | a tela (HTML/CSS/JS, sem build) | **GitHub Pages** |
+| `docs/` | as telas (HTML/CSS/JS, sem build) | **GitHub Pages** |
 | `config/` | a API (Express) + PostgreSQL | **a sua máquina** |
+
+E são **duas telas separadas**, de propósito:
+
+| Página | Quem usa | Como chega nela |
+|---|---|---|
+| `docs/index.html` | o restaurante | abre direto; tem mesas e QR, cozinha, caixa, produtos e módulos |
+| `docs/mesa.html` | o cliente | **só pelo QR da mesa** — sem o token na URL, a página não abre nada |
+
+O cliente não vê cozinha, caixa nem configuração, e não escolhe a mesa: o QR já
+diz qual é.
 
 O GitHub Pages só serve arquivo estático — não executa Node nem hospeda banco. Por
 isso a tela vai para lá e a API fica local. A página tem um campo **API** no topo:
@@ -46,6 +56,35 @@ node scripts/smoke.js
 Ele passa pelo fluxo inteiro com tudo desligado, confere que as rotas dos módulos
 desligados respondem 409, liga o pagamento antecipado, liga o estoque, e no fim
 devolve a configuração ao padrão e apaga o que criou.
+
+## O QR da mesa
+
+Em **Mesas e QR**, cada mesa gera o seu. O QR carrega um **token** de 12
+caracteres aleatórios, não o número da mesa — e essa escolha é o que torna
+possível *excluir* um QR:
+
+- **Gerar** cria o token e devolve o desenho em SVG, pronto para imprimir.
+- **Regerar** troca o token: o adesivo que está colado na mesa **para de
+  funcionar na hora**. É o que se faz quando alguém fotografou o QR.
+- **Excluir** revoga sem criar outro. A mesa continua existindo e sendo atendida
+  pelo caixa; quem morre é o adesivo.
+
+Com o número da mesa na URL nada disso existiria: qualquer um pediria na mesa 7
+trocando um dígito, e não haveria como cancelar um QR que vazou.
+
+O endereço que vai dentro do QR é montado pelo servidor, a partir de duas
+configurações (também em **Mesas e QR**):
+
+| Chave | Para que serve |
+|---|---|
+| `cliente.url` | onde a `mesa.html` está publicada |
+| `api.publica` | endereço da API **visto pelo celular do cliente** |
+
+> No celular, `localhost` é o próprio celular. Para testar com um telefone de
+> verdade, ponha o IP da sua máquina na rede (`http://192.168.0.x:3001`).
+
+Trocar esses endereços muda os QR codes **que ainda vão ser gerados** — os já
+impressos continuam apontando para o endereço antigo.
 
 ## Fluxo e módulos
 
@@ -115,8 +154,12 @@ coluna. O cardápio nunca precisa saber quem decidiu.
 | PATCH | `/produtos/:id/disponibilidade` | `{disponivel}` — liga/desliga no cardápio |
 | DELETE | `/produtos/:id` | remove |
 | GET/POST | `/api/mesas` | lista (com a conta aberta de cada uma) e cria |
-| GET | `/api/mesa/:numero/cardapio` | o que o QR abre: itens disponíveis + conta + modo de pagamento |
-| POST | `/api/pedidos` | `{mesa, cliente, itens:[{produto_id, quantidade, observacao}], pagar_agora}` |
+| POST | `/api/mesas/:id/qrcode` | gera **ou regera** o token; devolve a URL e o SVG |
+| DELETE | `/api/mesas/:id/qrcode` | revoga: o adesivo impresso deixa de abrir |
+| GET | `/api/mesas/:id/qrcode.svg` | o desenho, para imprimir |
+| GET | `/api/qr/:token` | **a porta do cliente**: cardápio + conta + pedidos numa resposta |
+| GET | `/api/mesa/:numero/cardapio` | o mesmo, por número — caminho administrativo |
+| POST | `/api/pedidos` | `{token \| mesa, cliente, itens:[{produto_id, quantidade, observacao}], pagar_agora}` |
 | GET | `/api/cozinha` | fila, com segundos desde a liberação |
 | POST | `/api/pedidos/:id/preparo\|pronto\|entregue\|cancelar` | avança a etapa |
 | GET | `/api/comandas?status=aberta` | lista do caixa, já com os totais |
@@ -196,9 +239,11 @@ Seguem abertos:
 
 - **Adquirente de verdade** no lugar do stub de pagamento.
 - **Carrinho persistido** — hoje ele vive só na memória da aba.
-- **Autenticação nas rotas administrativas.** Cozinha, caixa e configuração estão
-  abertas: qualquer um que alcance a API fecha uma mesa. Há login, mas ele ainda
-  não protege rota nenhuma. É o buraco mais sério que resta.
+- **Autenticação nas rotas administrativas.** Cozinha, caixa, configuração e
+  **as rotas de QR** estão abertas: quem alcança a API fecha uma mesa ou revoga
+  um QR. Há login, mas ele ainda não protege rota nenhuma. É o buraco mais sério
+  que resta — e enquanto ele existir, o token do QR protege o cliente de errar a
+  mesa, não a casa de quem age de má-fé.
 - **Recuperação de senha**, que não existe (hash não se desfaz).
 - **Tempo real na cozinha.** A tela se atualiza de 10 em 10 segundos; o certo é
   WebSocket ou SSE.

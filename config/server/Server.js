@@ -189,10 +189,8 @@ app.put('/api/configuracoes', async (req, res) => {
     res.json(await cfg.salvar(req.body || {}));
   } catch (e) {
     // Combinacao impossivel ou valor fora da lista e 400: e o usuario pedindo
-    // algo que nao existe, nao a API quebrando.
-    if (/inválid|desconhecida|exige|entre 0 e 100/i.test(e.message)) {
-      return res.status(400).json({ message: e.message });
-    }
+    // algo que nao existe, nao a API quebrando. A marca vem de configuracoes.js.
+    if (e.validacao) return res.status(400).json({ message: e.message });
     erro(res, e, 'Erro ao salvar as configurações');
   }
 });

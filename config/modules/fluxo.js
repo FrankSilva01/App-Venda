@@ -11,6 +11,8 @@
 //
 // A seta nunca aponta do nucleo para um modulo. E isso que deixa desligar.
 const express = require('express');
+const crypto = require('crypto');
+const QRCode = require('qrcode');
 const { query, transacao } = require('../server/dbConnection');
 const cfg = require('../server/configuracoes');
 const eventos = require('../server/eventos');
@@ -111,37 +113,125 @@ router.post('/mesas', async (req, res) => {
   }
 });
 
-// O que o QR da mesa abre. Sem login, sem cadastro: o numero da mesa vem na URL.
+// --------------------------------------------------------- QR da mesa
+// URL que vai dentro do QR. Montada no servidor porque so ele sabe o endereco
+// configurado da tela do cliente -- o adesivo precisa funcionar em qualquer
+// celular, nao so no navegador de quem gerou.
+async function urlDoQr(token) {
+  const base = await cfg.ler('cliente.url');
+  const api = await cfg.ler('api.publica');
+  return base + '?t=' + token + (api ? '&api=' + encodeURIComponent(api) : '');
+}
+
+// 12 caracteres de base64url (72 bits). Nao e sequencial de proposito: token
+// previsivel e o mesmo problema do numero da mesa na URL.
+const novoToken = () => crypto.randomBytes(9).toString('base64url');
+
+// Gera ou REGENERA. Regerar troca o token, e com isso o adesivo antigo para de
+// funcionar na hora -- e exatamente o que se quer quando a foto do QR vazou.
+router.post('/mesas/:id/qrcode', async (req, res) => {
+  try {
+    const r = await query(
+      'UPDATE mesas SET qr_token = $2, qr_criado_em = now() WHERE id = $1 RETURNING *',
+      [Number(req.params.id), novoToken()]
+    );
+    if (!r.rows.length) return res.status(404).json({ message: 'Mesa não encontrada.' });
+    const url = await urlDoQr(r.rows[0].qr_token);
+    res.status(201).json({ mesa: r.rows[0], url, svg: await QRCode.toString(url, { type: 'svg', margin: 1 }) });
+  } catch (e) { erro(res, e, 'Erro ao gerar o QR code'); }
+});
+
+router.delete('/mesas/:id/qrcode', async (req, res) => {
+  try {
+    const r = await query(
+      'UPDATE mesas SET qr_token = NULL, qr_criado_em = NULL WHERE id = $1 RETURNING *',
+      [Number(req.params.id)]
+    );
+    if (!r.rows.length) return res.status(404).json({ message: 'Mesa não encontrada.' });
+    // A mesa continua existindo e atendendo pelo caixa: quem morre e o adesivo.
+    res.json({ mesa: r.rows[0], message: 'QR code revogado. O adesivo antigo não abre mais nada.' });
+  } catch (e) { erro(res, e, 'Erro ao revogar o QR code'); }
+});
+
+// SVG para imprimir e colar na mesa. Sem PNG: SVG imprime nitido em qualquer
+// tamanho, e QR borrado e QR que o celular nao le.
+router.get('/mesas/:id/qrcode.svg', async (req, res) => {
+  try {
+    const m = await query('SELECT qr_token FROM mesas WHERE id = $1', [Number(req.params.id)]);
+    if (!m.rows.length || !m.rows[0].qr_token) {
+      return res.status(404).json({ message: 'Essa mesa ainda não tem QR code.' });
+    }
+    const svg = await QRCode.toString(await urlDoQr(m.rows[0].qr_token), { type: 'svg', margin: 1 });
+    res.type('image/svg+xml').send(svg);
+  } catch (e) { erro(res, e, 'Erro ao desenhar o QR code'); }
+});
+
+// O que a tela do cliente carrega. Tudo numa resposta so: cardapio, conta da
+// mesa e os pedidos em andamento -- o celular na mesa costuma estar num 4G ruim,
+// e tres chamadas sao tres chances de falhar.
+async function visaoDaMesa(mesa) {
+  const prod = await query(
+    'SELECT * FROM produtos WHERE disponivel ORDER BY categoria, nomeProduto'
+  );
+  const comanda = await query(
+    "SELECT * FROM comandas WHERE mesa_id = $1 AND status = 'aberta'", [mesa.id]
+  );
+
+  let pedidos = [];
+  let totais = null;
+  if (comanda.rows.length) {
+    const ps = await query(
+      "SELECT * FROM pedidos WHERE comanda_id = $1 AND status <> 'cancelado' ORDER BY id",
+      [comanda.rows[0].id]
+    );
+    const itens = await query(
+      `SELECT it.* FROM pedido_itens it JOIN pedidos p ON p.id = it.pedido_id
+        WHERE p.comanda_id = $1 ORDER BY it.id`,
+      [comanda.rows[0].id]
+    );
+    pedidos = ps.rows.map((p) =>
+      Object.assign(p, { itens: itens.rows.filter((i) => i.pedido_id === p.id) }));
+    totais = await totalComanda(comanda.rows[0].id);
+  }
+
+  const modo = await cfg.ler('pagamento.modo');
+  const integrado = await cfg.ligado('pagamento.integrado');
+
+  return {
+    mesa: { id: mesa.id, numero: mesa.numero, apelido: mesa.apelido },
+    produtos: prod.rows,
+    comanda: comanda.rows[0] || null,
+    pedidos,
+    totais,
+    // A tela do cliente nao conhece a regra: ela pergunta quais botoes existem.
+    pagamento: {
+      modo,
+      pode_pagar_agora: integrado && (modo === 'antecipado' || modo === 'ambos'),
+      exige_pagar_agora: integrado && modo === 'antecipado',
+    },
+  };
+}
+
+// Entrada do cliente: so o token do QR. Nao aceita numero de mesa.
+router.get('/qr/:token', async (req, res) => {
+  try {
+    const m = await query('SELECT * FROM mesas WHERE qr_token = $1 AND ativa', [req.params.token]);
+    // Mesma resposta para token errado e token revogado: nao ha o que diferenciar
+    // para quem esta do lado de fora.
+    if (!m.rows.length) {
+      return res.status(404).json({ message: 'Este QR code não está mais válido. Chame o garçom.' });
+    }
+    res.json(await visaoDaMesa(m.rows[0]));
+  } catch (e) { erro(res, e, 'Erro ao carregar a mesa'); }
+});
+
+// Caminho administrativo, por numero. Fica para o caixa e para teste; o cliente
+// nao passa por aqui -- senao revogar o QR nao significaria nada.
 router.get('/mesa/:numero/cardapio', async (req, res) => {
   try {
     const m = await query('SELECT * FROM mesas WHERE numero = $1 AND ativa', [Number(req.params.numero)]);
     if (!m.rows.length) return res.status(404).json({ message: 'Mesa não encontrada.' });
-
-    // Indisponivel nao aparece. Nao adianta mostrar e recusar depois -- quem
-    // decide o que esta disponivel e a coluna, venha ela do estoque ou da mao.
-    const prod = await query(
-      'SELECT * FROM produtos WHERE disponivel ORDER BY categoria, nomeProduto'
-    );
-    const comanda = await query(
-      "SELECT * FROM comandas WHERE mesa_id = $1 AND status = 'aberta'",
-      [m.rows[0].id]
-    );
-
-    const modo = await cfg.ler('pagamento.modo');
-    const integrado = await cfg.ligado('pagamento.integrado');
-
-    res.json({
-      mesa: m.rows[0],
-      produtos: prod.rows,
-      comanda: comanda.rows[0] || null,
-      // O cardapio ja diz ao celular quais botoes existem, para a tela nao
-      // precisar conhecer a regra de negocio.
-      pagamento: {
-        modo,
-        pode_pagar_agora: integrado && (modo === 'antecipado' || modo === 'ambos'),
-        exige_pagar_agora: integrado && modo === 'antecipado',
-      },
-    });
+    res.json(await visaoDaMesa(m.rows[0]));
   } catch (e) { erro(res, e, 'Erro ao carregar o cardápio'); }
 });
 
@@ -276,8 +366,9 @@ router.post('/comandas/:id/fechar', async (req, res) => {
 
 // --------------------------------------------------------------- pedidos
 router.post('/pedidos', async (req, res) => {
-  const { mesa, cliente, itens, pagar_agora } = req.body || {};
-  if (!mesa) return res.status(400).json({ message: 'Informe a mesa.' });
+  // O cliente manda `token` (o do QR); o caixa e os testes mandam `mesa`.
+  const { mesa, token, cliente, itens, pagar_agora } = req.body || {};
+  if (!mesa && !token) return res.status(400).json({ message: 'Informe a mesa.' });
   if (!Array.isArray(itens) || !itens.length) {
     return res.status(400).json({ message: 'O pedido está vazio.' });
   }
@@ -300,8 +391,15 @@ router.post('/pedidos', async (req, res) => {
     }
 
     const criado = await transacao(async (cx) => {
-      const m = await cx.query('SELECT * FROM mesas WHERE numero = $1 AND ativa', [Number(mesa)]);
-      if (!m.rows.length) { const e = new Error('Mesa não encontrada.'); e.status = 404; throw e; }
+      const m = token
+        ? await cx.query('SELECT * FROM mesas WHERE qr_token = $1 AND ativa', [token])
+        : await cx.query('SELECT * FROM mesas WHERE numero = $1 AND ativa', [Number(mesa)]);
+      if (!m.rows.length) {
+        const e = new Error(token
+          ? 'Este QR code não está mais válido. Chame o garçom.'
+          : 'Mesa não encontrada.');
+        e.status = 404; throw e;
+      }
 
       const comanda = await comandaAberta(m.rows[0].id, cx);
 

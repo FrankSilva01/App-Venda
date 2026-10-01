@@ -171,6 +171,53 @@ async function chama(metodo, caminho, corpo) {
   ok('financeiro separa Pix de cartao',
     cartao.dados.some((f) => f.forma === 'cartao_credito' && Number(f.taxas) > 0), cartao.dados);
 
+  // ------------------------------------- E) QR code da mesa
+  console.log('\nE) QR code vinculado a mesa');
+  await chama('PUT', '/api/configuracoes', { 'estoque.modo': 'desligado' });
+  await query('UPDATE produtos SET disponivel = true, quantidadeProduto = 5 WHERE idnomeProduto = $1', [produtoId]);
+
+  const mesaId = mesa.dados.id;
+  const semQr = await chama('GET', '/api/mesas/' + mesaId + '/qrcode.svg');
+  ok('mesa sem QR responde 404', semQr.status === 404, semQr.dados);
+
+  const gerou = await chama('POST', '/api/mesas/' + mesaId + '/qrcode');
+  ok('gera o QR', gerou.status === 201 && !!gerou.dados.mesa.qr_token, gerou.dados);
+  ok('devolve o SVG desenhado', /^<svg/.test(gerou.dados.svg || ''), (gerou.dados.svg || '').slice(0, 40));
+  ok('a URL do QR leva o token', (gerou.dados.url || '').indexOf(gerou.dados.mesa.qr_token) > 0, gerou.dados.url);
+  const token = gerou.dados.mesa.qr_token;
+
+  const pelaQr = await chama('GET', '/api/qr/' + token);
+  ok('o token abre a mesa certa', pelaQr.status === 200 && pelaQr.dados.mesa.numero === numeroMesa);
+  ok('a resposta traz cardapio, comanda e pedidos numa chamada so',
+    Array.isArray(pelaQr.dados.produtos) && 'comanda' in pelaQr.dados && Array.isArray(pelaQr.dados.pedidos));
+
+  const pedQr = await chama('POST', '/api/pedidos', {
+    token: token, cliente: 'Pelo QR', itens: [{ produto_id: produtoId, quantidade: 1 }],
+  });
+  ok('da para pedir so com o token', pedQr.status === 201, pedQr.dados);
+
+  // Regerar: o adesivo antigo tem de morrer na hora.
+  const regerou = await chama('POST', '/api/mesas/' + mesaId + '/qrcode');
+  ok('regera com outro token', regerou.dados.mesa.qr_token !== token, regerou.dados.mesa.qr_token);
+  const velho = await chama('GET', '/api/qr/' + token);
+  ok('o token antigo para de valer (404)', velho.status === 404, velho.dados);
+  const pedVelho = await chama('POST', '/api/pedidos', {
+    token: token, itens: [{ produto_id: produtoId, quantidade: 1 }],
+  });
+  ok('e nao da mais para pedir com ele (404)', pedVelho.status === 404, pedVelho.dados);
+
+  const revogou = await chama('DELETE', '/api/mesas/' + mesaId + '/qrcode');
+  ok('revoga o QR', revogou.status === 200 && revogou.dados.mesa.qr_token === null, revogou.dados);
+  const depoisRevogar = await chama('GET', '/api/qr/' + regerou.dados.mesa.qr_token);
+  ok('revogado tambem para de valer (404)', depoisRevogar.status === 404, depoisRevogar.dados);
+
+  // A mesa continua existindo e atendendo pelo caixa -- so o adesivo morreu.
+  const aindaExiste = await chama('GET', '/api/mesa/' + numeroMesa + '/cardapio');
+  ok('a mesa continua atendendo pelo caixa', aindaExiste.status === 200, aindaExiste.dados);
+
+  const urlTorta = await chama('PUT', '/api/configuracoes', { 'cliente.url': 'mesa.html' });
+  ok('recusa URL de cliente sem http (400)', urlTorta.status === 400, urlTorta.dados);
+
   // ------------------------------------------------------------ limpeza
   console.log('\nlimpeza');
   await query('DELETE FROM pagamentos WHERE comanda_id IN (SELECT id FROM comandas WHERE mesa_id = (SELECT id FROM mesas WHERE numero = $1))', [numeroMesa]);
