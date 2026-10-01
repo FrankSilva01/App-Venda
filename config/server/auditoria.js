@@ -12,10 +12,25 @@ const { query } = require('./dbConnection');
 const eventos = require('./eventos');
 
 async function registra(evento, dados) {
+  let mesaId = dados.mesa_id || null;
+
+  // Preenche a mesa a partir da comanda quando o evento não a trouxe.
+  //
+  // Dá para descobrir a mesa com um JOIN na hora da consulta -- mas só enquanto
+  // a comanda existir, e esta tabela existe justamente para sobreviver ao que
+  // for apagado. Uma consulta a mais aqui (fora do caminho da requisição, já
+  // que isto roda no barramento) deixa cada linha se explicando sozinha.
+  if (!mesaId && dados.comanda_id) {
+    try {
+      const r = await query('SELECT mesa_id FROM comandas WHERE id = $1', [dados.comanda_id]);
+      mesaId = r.rows[0] ? r.rows[0].mesa_id : null;
+    } catch (e) { /* sem mesa é melhor que sem registro */ }
+  }
+
   await query(
     `INSERT INTO auditoria (evento, mesa_id, comanda_id, pedido_id, usuario_id, origem, detalhe)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [evento, dados.mesa_id || null, dados.comanda_id || null, dados.pedido_id || null,
+    [evento, mesaId, dados.comanda_id || null, dados.pedido_id || null,
      dados.usuario_id || null, dados.origem || null,
      dados.detalhe === undefined ? null : JSON.stringify(dados.detalhe)]
   );
@@ -68,6 +83,15 @@ eventos.on('chamado:aberto', ({ chamado }) => registra('chamado:' + chamado.tipo
 eventos.on('chamado:assumido', ({ chamado, usuario }) => registra('chamado:assumido', {
   mesa_id: chamado.mesa_id, comanda_id: chamado.comanda_id,
   usuario_id: usuario ? usuario.id : null, detalhe: { tipo: chamado.tipo },
+}));
+
+// Faltava. E o evento que a interface realmente dispara -- o botao da gaveta
+// resolve direto, sem passar por "assumir" -- entao sem este ouvinte ninguem
+// sabia QUEM atendeu a mesa que chamou.
+eventos.on('chamado:resolvido', ({ chamado, usuario }) => registra('chamado:resolvido', {
+  mesa_id: chamado.mesa_id, comanda_id: chamado.comanda_id,
+  usuario_id: usuario ? usuario.id : (chamado.usuario_id || null),
+  detalhe: { tipo: chamado.tipo },
 }));
 
 // Historico de uma comanda, para a tela do caixa e para conferencia depois.

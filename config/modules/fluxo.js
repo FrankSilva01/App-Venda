@@ -779,12 +779,19 @@ router.post('/chamados/:id/assumir', async (req, res) => {
 router.post('/chamados/:id/resolver', async (req, res) => {
   try {
     const r = await query(
-      `UPDATE chamados SET status = 'resolvido', atendido_em = COALESCE(atendido_em, now())
+      // COALESCE: se alguem ja tinha assumido, o credito e de quem assumiu --
+      // resolver depois nao rouba o atendimento. Se ninguem assumiu (que e o
+      // caminho normal: o garcom ve a mesa piscando e resolve direto), fica
+      // registrado quem resolveu.
+      `UPDATE chamados
+          SET status = 'resolvido',
+              atendido_em = COALESCE(atendido_em, now()),
+              usuario_id = COALESCE(usuario_id, $2)
         WHERE id = $1 AND status <> 'resolvido' RETURNING *`,
-      [Number(req.params.id)]
+      [Number(req.params.id), req.usuario ? req.usuario.id : null]
     );
     if (!r.rows.length) return res.status(409).json({ message: 'Esse chamado já está resolvido.' });
-    eventos.emitir('chamado:resolvido', { chamado: r.rows[0] });
+    eventos.emitir('chamado:resolvido', { chamado: r.rows[0], usuario: req.usuario || null });
     res.json(r.rows[0]);
   } catch (e) { erro(res, e, 'Erro ao resolver o chamado'); }
 });
