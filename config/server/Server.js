@@ -1,133 +1,136 @@
+// API do App-Venda.
+//
+// Convertido de MySQL para PostgreSQL. Tres mudancas que atravessam o arquivo:
+//   - os marcadores viraram $1, $2... (no mysql2 eram ?);
+//   - INSERT ganha RETURNING, porque o pg nao devolve insertId;
+//   - credenciais sairam do codigo e vieram do .env (ver dbConnection.js).
+require('dotenv').config();
 const express = require('express');
-const app = express();
-const mysql = require('mysql2');
-const multer = require('multer');
 const path = require('path');
 const cors = require('cors');
 
-const port = 3001;
+const { query } = require('./dbConnection');
+const upload = require('../MulterConfig');
 
-// Configuração do Multer para o upload da imagem
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, file.originalname); // Usar o nome original do arquivo
-  },
-});
-
-const upload = multer({ storage });
-
-// Configuração do MySQL
-const connection = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: '123456',
-  database: 'app_praia',
-});
-
-connection.connect((err) => {
-  if (err) {
-    console.error('Erro ao conectar ao MySQL: ' + err.stack);
-    return;
-  }
-  console.log('Conexão bem-sucedida ao MySQL com o ID: ' + connection.threadId);
-});
+const app = express();
+const port = Number(process.env.PORT || 3001);
 
 app.use(cors());
 app.use(express.json());
-app.use('/upload', express.static(path.join(__dirname, 'uploads')));
+app.use(express.urlencoded({ extended: true }));
 
-// Rota para receber o formulário de cadastro e salvar no banco de dados
-app.post('/api/cadastrarProduto', upload.single('imagemProduto'), (req, res) => {
-  console.log(req.body);
+// A MESMA pasta em que o Multer grava -- vem de la para as duas pontas nao
+// poderem divergir de novo.
+app.use('/upload', express.static(upload.PASTA_UPLOADS));
+
+function erro(res, e, msg) {
+  console.error(msg + ':', e.message);
+  res.status(500).json({ error: msg });
+}
+
+// ---------------------------------------------------------------- produtos
+app.post('/api/cadastrarProduto', upload.single('imagemProduto'), async (req, res) => {
   const { nomeProduto, precoProduto, descricaoProduto, quantidadeProduto, categoria } = req.body;
-  const imagemProduto = req.file.filename;
-
   if (!nomeProduto || !precoProduto || !descricaoProduto || !quantidadeProduto || !categoria || !req.file) {
-    res.status(400).json({ message: 'Todos os campos devem ser preenchidos.' });
-    return;
+    return res.status(400).json({ message: 'Todos os campos devem ser preenchidos.' });
   }
-
-
-  const sql = 'INSERT INTO produtos (nomeProduto, precoProduto, descricaoProduto, imagemProduto, quantidadeProduto, categoria) VALUES (?, ?, ?, ?, ?, ?)';
-  const values = [nomeProduto, precoProduto, descricaoProduto, imagemProduto, quantidadeProduto, categoria];
-
-  connection.query(sql, values, (err, result) => {
-    if (err) {
-      console.error('Erro ao cadastrar o produto: ' + err);
-      res.sendStatus(500);
-      return;
-    }
-
-    res.sendStatus(200);
-  });
+  try {
+    const r = await query(
+      `INSERT INTO produtos
+         (nomeProduto, precoProduto, descricaoProduto, imagemProduto, quantidadeProduto, categoria)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING idnomeProduto`,
+      [nomeProduto, precoProduto, descricaoProduto, req.file.filename, quantidadeProduto, categoria]
+    );
+    res.status(201).json({ id: r.rows[0].idnomeproduto, message: 'Produto cadastrado com sucesso' });
+  } catch (e) {
+    erro(res, e, 'Erro ao cadastrar o produto');
+  }
 });
 
-// Rota para cadastrar o usuário
-app.post('/api/cadastrarUsuario', (req, res) => {
+app.get('/produtos', async (req, res) => {
+  // Filtro por categoria: era um item do Etapas.txt ("puxar somente as bebidas")
+  // e sai de graca aqui, em vez de buscar tudo e filtrar no navegador.
+  const { categoria } = req.query;
+  try {
+    const r = categoria
+      ? await query('SELECT * FROM produtos WHERE categoria = $1 ORDER BY nomeProduto', [categoria])
+      : await query('SELECT * FROM produtos ORDER BY nomeProduto');
+    res.json(r.rows);
+  } catch (e) {
+    erro(res, e, 'Erro ao obter os produtos');
+  }
+});
+
+app.delete('/produtos/:idnomeProduto', async (req, res) => {
+  try {
+    const r = await query('DELETE FROM produtos WHERE idnomeProduto = $1', [req.params.idnomeProduto]);
+    if (!r.rowCount) return res.status(404).json({ message: 'Produto não encontrado' });
+    res.json({ message: 'Produto removido' });
+  } catch (e) {
+    erro(res, e, 'Erro ao deletar o produto');
+  }
+});
+
+// ---------------------------------------------------------------- usuarios
+app.post('/api/cadastrarUsuario', async (req, res) => {
   const { login, email, senha, cpf } = req.body;
-  const sql = 'INSERT INTO usuarios (login, email, senha, cpf) VALUES (?, ?, ?, ?)';
-  const values = [login, email, senha, cpf];
-
-  connection.query(sql, values, (error, results) => {
-    if (error) {
-      console.error('Erro ao cadastrar o usuário: ' + error);
-      res.sendStatus(500);
-      return;
+  if (!login || !email || !senha || !cpf) {
+    return res.status(400).json({ message: 'Todos os campos devem ser preenchidos.' });
+  }
+  try {
+    const r = await query(
+      'INSERT INTO usuarios (login, email, senha, cpf) VALUES ($1, $2, $3, $4) RETURNING id',
+      [login, email, senha, cpf]
+    );
+    res.status(201).json({ id: r.rows[0].id });
+  } catch (e) {
+    // 23505 = violacao de UNIQUE. Era um item do Etapas.txt: avisar que o login,
+    // o CPF ou o e-mail ja existem, em vez de estourar 500.
+    if (e.code === '23505') {
+      return res.status(409).json({ message: 'Login, e-mail ou CPF já cadastrado.' });
     }
-    res.sendStatus(200);
-  });
+    erro(res, e, 'Erro ao cadastrar o usuário');
+  }
 });
 
-app.get('/api/usuarios', (req, res) => {
-  const {login, senha} = req.query
-  values = 'SELECT * FROM usuarios WHERE login = ? AND senha = ?'
-
-  connection.query(values,  [login,senha], (err, results) => {
-    if (err) {
-      console.error('Erro ao verificar os dados de login: ' + err.message);
-      res.status(500).json({ error: 'Erro ao obter o usuario' });
-    } else {
-      res.json(results);
-    }
-  });
+app.get('/api/usuarios', async (req, res) => {
+  const { login, senha } = req.query;
+  if (!login || !senha) return res.status(400).json({ error: 'Informe login e senha.' });
+  try {
+    // Sem SELECT *: a senha nao volta na resposta, nem para quem acertou.
+    const r = await query(
+      'SELECT id, login, email, cpf FROM usuarios WHERE login = $1 AND senha = $2',
+      [login, senha]
+    );
+    res.json(r.rows);
+  } catch (e) {
+    erro(res, e, 'Erro ao verificar os dados de login');
+  }
 });
 
-app.get('/produtos', (req, res) => {
-  const query = 'SELECT * FROM produtos';
-
-  connection.query(query, (error, results) => {
-    if (error) {
-      console.error('Erro ao obter os produtos:', error);
-      res.status(500).json({ error: 'Erro ao obter os produtos' });
-    } else {
-      res.json(results);
-    }
-  });
+// Para saber se a API esta de pe sem precisar de banco com dado dentro.
+app.get('/health', async (req, res) => {
+  try {
+    await query('SELECT 1');
+    res.json({ ok: true, banco: 'postgres' });
+  } catch (e) {
+    res.status(503).json({ ok: false, erro: e.message });
+  }
 });
 
-// Rota para deletar um produto pelo ID
-app.delete('/produtos/:idnomeProduto', (req, res) => {
-  const { idnomeProduto } = req.params;
-
-  const sql = 'DELETE FROM produtos WHERE idnomeProduto = ?';
-
-  connection.query(sql, [idnomeProduto], (err, result) => {
-    if (err) {
-      console.error('Erro ao deletar o produto: ' + err);
-      res.sendStatus(500);
-      return;
-    }
-
-    res.sendStatus(200);
-  });
+// Falha de upload (nao e imagem, passou de 5 MB) chega aqui como erro do Multer.
+// Sem este handler o Express devolve uma pagina HTML de erro -- o front espera JSON.
+app.use((err, req, res, next) => {
+  if (err && err.message) {
+    console.error('Falha na requisicao:', err.message);
+    return res.status(400).json({ error: err.message });
+  }
+  next(err);
 });
 
 app.listen(port, () => {
-  console.log('Servidor rodando na porta ' + port);
+  console.log('API do App-Venda na porta ' + port);
 });
 
-
-module.exports = connection
+module.exports = app;

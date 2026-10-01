@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App-Venda</title>
+<style>
+  :root{
+    --bg:#0f1116; --card:#171a21; --line:#262b36; --ink:#e7ebf2; --muted:#98a2b3;
+    --azul:#3b82f6; --verde:#16a34a; --vermelho:#dc2626; --amarelo:#d97706;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f4f6f9; --card:#fff; --line:#e3e7ee; --ink:#1b2130; --muted:#5d6b84; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{background:var(--card);border-bottom:1px solid var(--line);padding:16px 20px;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{margin:0;font-size:19px}
+  header .sub{color:var(--muted);font-size:13px}
+  .api{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12.5px}
+  .api input{width:210px;background:var(--bg);color:var(--ink);border:1px solid var(--line);
+    border-radius:8px;padding:7px 9px;font:inherit;font-size:12.5px}
+  .pino{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+  .pino.on{background:var(--verde)} .pino.off{background:var(--vermelho)}
+  main{max-width:1040px;margin:0 auto;padding:20px}
+  .abas{display:flex;gap:6px;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:5px;margin-bottom:18px;flex-wrap:wrap}
+  .abas button{flex:1;min-width:120px;border:0;background:transparent;border-radius:9px;
+    padding:10px;font:inherit;font-weight:600;color:var(--muted);cursor:pointer}
+  .abas button.on{background:var(--azul);color:#fff}
+  .cartao{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;
+    margin-bottom:16px}
+  .cartao h2{margin:0 0 14px;font-size:16px}
+  label{display:block;font-size:12.5px;color:var(--muted);margin:0 0 4px}
+  input,select,textarea{width:100%;background:var(--bg);color:var(--ink);
+    border:1px solid var(--line);border-radius:9px;padding:9px 11px;font:inherit}
+  .linha{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:12px}
+  button.acao{background:var(--azul);color:#fff;border:0;border-radius:9px;padding:10px 18px;
+    font:inherit;font-weight:600;cursor:pointer}
+  button.acao.sec{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  button.acao.perigo{background:var(--vermelho)}
+  button.acao:disabled{opacity:.5;cursor:default}
+  .grade{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px}
+  .prod{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;
+    display:flex;flex-direction:column}
+  .prod img{width:100%;height:130px;object-fit:cover;background:var(--bg)}
+  .prod .corpo{padding:11px 13px;display:flex;flex-direction:column;gap:5px;flex:1}
+  .prod .nome{font-weight:700}
+  .prod .desc{font-size:12.5px;color:var(--muted);flex:1}
+  .prod .preco{font-weight:800;color:var(--verde)}
+  .prod .pe{display:flex;align-items:center;gap:8px;padding:0 13px 12px}
+  .cat{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+    background:var(--azul)22;color:var(--azul);border-radius:6px;padding:2px 7px}
+  .vazio{color:var(--muted);text-align:center;padding:30px}
+  .aviso{border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:13.5px}
+  .aviso.ok{background:#16a34a1f;color:var(--verde)}
+  .aviso.erro{background:#dc26261f;color:var(--vermelho)}
+  .aviso.info{background:#d976061f;color:var(--amarelo)}
+  .carrinho{position:sticky;top:14px}
+  .item{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--line);
+    font-size:13.5px}
+  .item:last-child{border-bottom:0}
+  .item .x{margin-left:auto;background:0;border:0;color:var(--vermelho);cursor:pointer;font-size:17px}
+  .total{display:flex;justify-content:space-between;font-weight:800;padding-top:11px;
+    border-top:1px solid var(--line);margin-top:9px}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>App-Venda</h1>
+    <div class="sub">Pedidos para restaurante</div>
+  </div>
+  <div class="api">
+    <span class="pino" id="pino"></span>
+    <label for="apiUrl" style="margin:0">API</label>
+    <input id="apiUrl" spellcheck="false">
+  </div>
+</header>
+
+<main>
+  <div id="avisoApi"></div>
+  <div class="abas">
+    <button data-aba="cardapio" class="on">Cardápio</button>
+    <button data-aba="admin">Cadastrar produto</button>
+    <button data-aba="conta">Conta</button>
+  </div>
+  <div id="tela"></div>
+</main>
+
+<script>
+// A pagina e estatica (GitHub Pages) e conversa com a API que roda na MAQUINA de
+// quem abre. Por isso o endereco e editavel e fica guardado: em localhost cada um
+// roda a sua, e um dia isso pode virar um servidor de verdade sem mexer no HTML.
+//
+// Navegador bloqueia HTTP dentro de pagina HTTPS -- menos para localhost, que o
+// Chrome trata como origem confiavel. E por isso que este arranjo funciona.
+var API = localStorage.getItem('appvenda-api') || 'http://localhost:3001';
+var ABA = 'cardapio', PRODUTOS = [], CARRINHO = [], USUARIO = null;
+
+var $ = function (s) { return document.querySelector(s); };
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function moeda(v){ return 'R$ ' + Number(v).toFixed(2).replace('.', ','); }
+
+function aviso(onde, tipo, txt){
+  var el = typeof onde === 'string' ? $(onde) : onde;
+  if (el) el.innerHTML = '<div class="aviso ' + tipo + '">' + esc(txt) + '</div>';
+}
+
+// ---------------------------------------------------------------- API
+async function api(caminho, opcoes){
+  var r = await fetch(API + caminho, opcoes);
+  var txt = await r.text();
+  var dados = null;
+  try { dados = txt ? JSON.parse(txt) : null; } catch (e) { dados = { message: txt }; }
+  if (!r.ok) throw new Error((dados && (dados.message || dados.error)) || ('HTTP ' + r.status));
+  return dados;
+}
+
+async function pingApi(){
+  var p = $('#pino');
+  try {
+    await api('/health');
+    p.className = 'pino on';
+    $('#avisoApi').innerHTML = '';
+    return true;
+  } catch (e) {
+    p.className = 'pino off';
+    aviso('#avisoApi', 'info',
+      'A API não respondeu em ' + API + '. Ela roda na sua máquina: suba o Postgres ' +
+      '(docker compose up -d) e depois npm start, dentro da pasta do projeto.');
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------- telas
+function pinta(){
+  document.querySelectorAll('[data-aba]').forEach(function(b){
+    b.className = b.getAttribute('data-aba') === ABA ? 'on' : '';
+  });
+  if (ABA === 'cardapio') return telaCardapio();
+  if (ABA === 'admin')    return telaAdmin();
+  return telaConta();
+}
+
+function telaCardapio(){
+  var cats = {};
+  PRODUTOS.forEach(function(p){ if (p.categoria) cats[p.categoria] = 1; });
+  $('#tela').innerHTML =
+    '<div class="linha" style="grid-template-columns:1fr auto">' +
+      '<div><label for="fcat">Categoria</label><select id="fcat">' +
+        '<option value="">Todas</option>' +
+        Object.keys(cats).sort().map(function(c){
+          return '<option>' + esc(c) + '</option>'; }).join('') +
+      '</select></div>' +
+      '<div style="align-self:end"><button class="acao sec" id="recarrega">Atualizar</button></div>' +
+    '</div>' +
+    '<div class="linha" style="grid-template-columns:2fr 1fr;align-items:start">' +
+      '<div id="grade"></div>' +
+      '<div class="cartao carrinho"><h2>Meu pedido</h2><div id="itens"></div></div>' +
+    '</div>';
+  $('#fcat').onchange = function(){ carregaProdutos(this.value); };
+  $('#recarrega').onclick = function(){ carregaProdutos($('#fcat').value); };
+  pintaGrade();
+  pintaCarrinho();
+}
+
+function pintaGrade(){
+  var g = $('#grade');
+  if (!g) return;
+  if (!PRODUTOS.length){
+    g.innerHTML = '<div class="vazio">Nenhum produto cadastrado ainda.</div>';
+    return;
+  }
+  g.innerHTML = '<div class="grade">' + PRODUTOS.map(function(p){
+    return '<div class="prod">' +
+      (p.imagemproduto
+        ? '<img src="' + API + '/upload/' + encodeURIComponent(p.imagemproduto) + '" alt="">'
+        : '<img alt="">') +
+      '<div class="corpo">' +
+        (p.categoria ? '<span class="cat">' + esc(p.categoria) + '</span>' : '') +
+        '<span class="nome">' + esc(p.nomeproduto) + '</span>' +
+        '<span class="desc">' + esc(p.descricaoproduto || '') + '</span>' +
+        '<span class="preco">' + moeda(p.precoproduto) + '</span>' +
+      '</div>' +
+      '<div class="pe"><button class="acao" data-add="' + p.idnomeproduto + '" ' +
+        'style="flex:1">Adicionar</button></div>' +
+    '</div>';
+  }).join('') + '</div>';
+  g.querySelectorAll('[data-add]').forEach(function(b){
+    b.onclick = function(){ addCarrinho(Number(b.getAttribute('data-add'))); };
+  });
+}
+
+function addCarrinho(id){
+  var p = PRODUTOS.filter(function(x){ return x.idnomeproduto === id; })[0];
+  if (!p) return;
+  var ja = CARRINHO.filter(function(x){ return x.id === id; })[0];
+  if (ja) ja.qtd++;
+  else CARRINHO.push({ id: id, nome: p.nomeproduto, preco: Number(p.precoproduto), qtd: 1 });
+  pintaCarrinho();
+}
+
+function pintaCarrinho(){
+  var el = $('#itens');
+  if (!el) return;
+  if (!CARRINHO.length){
+    el.innerHTML = '<div class="vazio" style="padding:14px">Nada por aqui ainda.</div>';
+    return;
+  }
+  var total = CARRINHO.reduce(function(s, i){ return s + i.preco * i.qtd; }, 0);
+  el.innerHTML = CARRINHO.map(function(i){
+    return '<div class="item"><b>' + i.qtd + '×</b> ' + esc(i.nome) +
+      '<span style="color:var(--muted)">' + moeda(i.preco * i.qtd) + '</span>' +
+      '<button class="x" data-rm="' + i.id + '" title="Tirar">×</button></div>';
+  }).join('') +
+  '<div class="total"><span>Total</span><span>' + moeda(total) + '</span></div>';
+  el.querySelectorAll('[data-rm]').forEach(function(b){
+    b.onclick = function(){
+      var id = Number(b.getAttribute('data-rm'));
+      CARRINHO = CARRINHO.filter(function(x){ return x.id !== id; });
+      pintaCarrinho();
+    };
+  });
+}
+
+function telaAdmin(){
+  $('#tela').innerHTML =
+    '<div class="cartao"><h2>Cadastrar produto</h2>' +
+      '<div id="msgProd"></div>' +
+      '<div class="linha">' +
+        '<div><label>Nome</label><input id="pNome"></div>' +
+        '<div><label>Preço</label><input id="pPreco" type="number" step="0.01" min="0"></div>' +
+      '</div>' +
+      '<div class="linha">' +
+        '<div><label>Quantidade</label><input id="pQtd" type="number" min="0" value="1"></div>' +
+        '<div><label>Categoria</label><input id="pCat" placeholder="bebidas, comidas..."></div>' +
+      '</div>' +
+      '<div style="margin-bottom:12px"><label>Descrição</label><input id="pDesc"></div>' +
+      '<div style="margin-bottom:14px"><label>Imagem</label><input id="pImg" type="file" accept="image/*"></div>' +
+      '<button class="acao" id="pSalvar">Cadastrar</button>' +
+    '</div>' +
+    '<div class="cartao"><h2>Produtos em estoque</h2><div id="lista"></div></div>';
+  $('#pSalvar').onclick = cadastraProduto;
+  pintaLista();
+}
+
+function pintaLista(){
+  var el = $('#lista');
+  if (!el) return;
+  if (!PRODUTOS.length){ el.innerHTML = '<div class="vazio">Nada cadastrado.</div>'; return; }
+  el.innerHTML = PRODUTOS.map(function(p){
+    return '<div class="item"><b>' + esc(p.nomeproduto) + '</b>' +
+      '<span class="cat">' + esc(p.categoria || '-') + '</span>' +
+      '<span style="color:var(--muted)">' + moeda(p.precoproduto) + ' · ' +
+        p.quantidadeproduto + ' un.</span>' +
+      '<button class="x" data-del="' + p.idnomeproduto + '" title="Excluir">×</button></div>';
+  }).join('');
+  el.querySelectorAll('[data-del]').forEach(function(b){
+    b.onclick = async function(){
+      if (!confirm('Excluir este produto?')) return;
+      try {
+        await api('/produtos/' + b.getAttribute('data-del'), { method: 'DELETE' });
+        await carregaProdutos();
+        pintaLista();
+      } catch (e) { aviso('#msgProd', 'erro', e.message); }
+    };
+  });
+}
+
+async function cadastraProduto(){
+  var fd = new FormData();
+  fd.append('nomeProduto', $('#pNome').value);
+  fd.append('precoProduto', $('#pPreco').value);
+  fd.append('descricaoProduto', $('#pDesc').value);
+  fd.append('quantidadeProduto', $('#pQtd').value);
+  fd.append('categoria', $('#pCat').value);
+  if ($('#pImg').files[0]) fd.append('imagemProduto', $('#pImg').files[0]);
+  var b = $('#pSalvar');
+  b.disabled = true; b.textContent = 'Cadastrando...';
+  try {
+    await api('/api/cadastrarProduto', { method: 'POST', body: fd });
+    aviso('#msgProd', 'ok', 'Produto cadastrado.');
+    ['#pNome','#pPreco','#pDesc','#pCat','#pImg'].forEach(function(s){ $(s).value = ''; });
+    await carregaProdutos();
+    pintaLista();
+  } catch (e) {
+    aviso('#msgProd', 'erro', e.message);
+  } finally {
+    b.disabled = false; b.textContent = 'Cadastrar';
+  }
+}
+
+function telaConta(){
+  $('#tela').innerHTML =
+    '<div class="linha" style="grid-template-columns:1fr 1fr;align-items:start">' +
+      '<div class="cartao"><h2>Entrar</h2><div id="msgLogin"></div>' +
+        '<div style="margin-bottom:12px"><label>Login</label><input id="lLogin"></div>' +
+        '<div style="margin-bottom:14px"><label>Senha</label><input id="lSenha" type="password"></div>' +
+        '<button class="acao" id="bEntrar">Entrar</button>' +
+        (USUARIO ? '<p style="color:var(--verde);margin:12px 0 0">Conectado como <b>' +
+          esc(USUARIO.login) + '</b></p>' : '') +
+      '</div>' +
+      '<div class="cartao"><h2>Criar conta</h2><div id="msgCad"></div>' +
+        '<div style="margin-bottom:12px"><label>Login</label><input id="cLogin"></div>' +
+        '<div style="margin-bottom:12px"><label>E-mail</label><input id="cEmail" type="email"></div>' +
+        '<div style="margin-bottom:12px"><label>CPF</label><input id="cCpf"></div>' +
+        '<div style="margin-bottom:14px"><label>Senha</label><input id="cSenha" type="password"></div>' +
+        '<button class="acao" id="bCriar">Cadastrar</button>' +
+      '</div>' +
+    '</div>';
+  $('#bEntrar').onclick = async function(){
+    try {
+      var r = await api('/api/usuarios?login=' + encodeURIComponent($('#lLogin').value) +
+                        '&senha=' + encodeURIComponent($('#lSenha').value));
+      if (!r.length) return aviso('#msgLogin', 'erro', 'Login ou senha não conferem.');
+      USUARIO = r[0];
+      pinta();
+    } catch (e) { aviso('#msgLogin', 'erro', e.message); }
+  };
+  $('#bCriar').onclick = async function(){
+    try {
+      await api('/api/cadastrarUsuario', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login: $('#cLogin').value, email: $('#cEmail').value,
+                               cpf: $('#cCpf').value, senha: $('#cSenha').value })
+      });
+      aviso('#msgCad', 'ok', 'Conta criada. Já dá para entrar.');
+    } catch (e) { aviso('#msgCad', 'erro', e.message); }
+  };
+}
+
+// ---------------------------------------------------------------- carga
+async function carregaProdutos(categoria){
+  try {
+    PRODUTOS = await api('/produtos' + (categoria ? '?categoria=' + encodeURIComponent(categoria) : ''));
+  } catch (e) {
+    PRODUTOS = [];
+  }
+  pintaGrade();
+  pintaLista();
+}
+
+$('#apiUrl').value = API;
+$('#apiUrl').onchange = async function(){
+  API = this.value.replace(/\/+$/, '');
+  localStorage.setItem('appvenda-api', API);
+  if (await pingApi()) await carregaProdutos();
+  pinta();
+};
+document.querySelectorAll('[data-aba]').forEach(function(b){
+  b.onclick = function(){ ABA = b.getAttribute('data-aba'); pinta(); };
+});
+
+(async function(){
+  pinta();
+  if (await pingApi()) await carregaProdutos();
+  pinta();
+})();
+</script>
+</body>
+</html>

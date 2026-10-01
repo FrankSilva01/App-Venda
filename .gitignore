@@ -1,0 +1,7 @@
+node_modules/
+.env
+
+# Imagens enviadas em tempo de execucao. O repositorio nao e lugar de upload de
+# usuario: 13 MB de teste ja tinham entrado aqui sem querer.
+config/server/uploads/*
+!config/server/uploads/.gitkeep

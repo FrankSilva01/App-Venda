@@ -1,0 +1,19 @@
+{
+  "name": "app-venda",
+  "version": "1.0.0",
+  "description": "App de venda para restaurantes - API",
+  "main": "config/server/Server.js",
+  "scripts": {
+    "start": "node config/server/Server.js",
+    "dev": "node --watch config/server/Server.js",
+    "schema": "node config/server/aplicaSchema.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.13.1"
+  },
+  "engines": { "node": ">=18" }
+}
