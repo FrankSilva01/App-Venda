@@ -14,6 +14,14 @@ const bcrypt = require('bcryptjs');
 const { query } = require('./dbConnection');
 const upload = require('../MulterConfig');
 
+// Composicao: e AQUI que o produto é montado, e so aqui. O nucleo nao conhece
+// os modulos; este arquivo conhece os quatro e decide quem entra.
+const cfg = require('./configuracoes');
+const fluxo = require('../modules/fluxo');
+const pagamento = require('../modules/pagamento');
+const estoque = require('../modules/estoque');
+const financeiro = require('../modules/financeiro');
+
 const app = express();
 const port = Number(process.env.PORT || 3001);
 
@@ -71,6 +79,26 @@ app.delete('/produtos/:idnomeProduto', async (req, res) => {
     res.json({ message: 'Produto removido' });
   } catch (e) {
     erro(res, e, 'Erro ao deletar o produto');
+  }
+});
+
+// Liga e desliga o item no cardapio. E o controle de disponibilidade do modo
+// SEM estoque -- e continua valendo com o estoque ligado, para o gerente poder
+// tirar do ar um prato que tem insumo mas acabou de queimar.
+app.patch('/produtos/:id/disponibilidade', async (req, res) => {
+  const { disponivel } = req.body || {};
+  if (typeof disponivel !== 'boolean') {
+    return res.status(400).json({ message: 'Envie disponivel: true ou false.' });
+  }
+  try {
+    const r = await query(
+      'UPDATE produtos SET disponivel = $2 WHERE idnomeProduto = $1 RETURNING *',
+      [Number(req.params.id), disponivel]
+    );
+    if (!r.rows.length) return res.status(404).json({ message: 'Produto não encontrado' });
+    res.json(r.rows[0]);
+  } catch (e) {
+    erro(res, e, 'Erro ao mudar a disponibilidade');
   }
 });
 
@@ -147,11 +175,60 @@ app.get('/api/usuarios', (req, res) => {
   });
 });
 
+// ------------------------------------------------ configuracao e modulos
+// A configuracao e do nucleo: e a tela que liga e desliga os modulos, entao ela
+// nao pode morar dentro de nenhum deles.
+app.get('/api/configuracoes', async (req, res) => {
+  try {
+    res.json(await cfg.todas());
+  } catch (e) { erro(res, e, 'Erro ao ler as configurações'); }
+});
+
+app.put('/api/configuracoes', async (req, res) => {
+  try {
+    res.json(await cfg.salvar(req.body || {}));
+  } catch (e) {
+    // Combinacao impossivel ou valor fora da lista e 400: e o usuario pedindo
+    // algo que nao existe, nao a API quebrando.
+    if (/inválid|desconhecida|exige|entre 0 e 100/i.test(e.message)) {
+      return res.status(400).json({ message: e.message });
+    }
+    erro(res, e, 'Erro ao salvar as configurações');
+  }
+});
+
+// O nucleo esta sempre no ar.
+app.use('/api', fluxo.router);
+
+// Os modulos tambem sao montados sempre -- quem decide e o middleware, a cada
+// requisicao. Montar so no boot obrigaria a reiniciar a API para ligar um
+// modulo, e a tela de Configuracoes promete o contrario.
+function exigeModulo(nome) {
+  return async (req, res, next) => {
+    try {
+      if (await cfg.moduloAtivo(nome)) return next();
+      // 409 e nao 404: a rota existe, o estabelecimento e que nao a habilitou.
+      res.status(409).json({
+        message: 'Módulo ' + nome + ' está desligado para este estabelecimento.',
+        modulo: nome,
+      });
+    } catch (e) { next(e); }
+  };
+}
+
+app.use('/api/pagamento', exigeModulo('pagamento'), pagamento.router);
+app.use('/api/estoque', exigeModulo('estoque'), estoque.router);
+app.use('/api/financeiro', exigeModulo('financeiro'), financeiro.router);
+
 // Para saber se a API esta de pe sem precisar de banco com dado dentro.
 app.get('/health', async (req, res) => {
   try {
     await query('SELECT 1');
-    res.json({ ok: true, banco: 'postgres' });
+    // Em try separado: instalacao com o banco de pe mas sem `npm run schema`
+    // ainda deve responder ok e dizer o que falta, em vez de 503.
+    let configuracao = null;
+    try { configuracao = await cfg.todas(); } catch (e) { configuracao = { erro: e.message }; }
+    res.json({ ok: true, banco: 'postgres', configuracao });
   } catch (e) {
     res.status(503).json({ ok: false, erro: e.message });
   }

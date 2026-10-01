@@ -83,8 +83,11 @@
 <main>
   <div id="avisoApi"></div>
   <div class="abas">
-    <button data-aba="cardapio" class="on">Cardápio</button>
-    <button data-aba="admin">Cadastrar produto</button>
+    <button data-aba="cardapio" class="on">Mesa (QR)</button>
+    <button data-aba="cozinha">Cozinha</button>
+    <button data-aba="caixa">Caixa</button>
+    <button data-aba="admin">Produtos</button>
+    <button data-aba="config">Módulos</button>
     <button data-aba="conta">Conta</button>
   </div>
   <div id="tela"></div>
@@ -99,6 +102,18 @@
 // Chrome trata como origem confiavel. E por isso que este arranjo funciona.
 var API = localStorage.getItem('appvenda-api') || 'http://localhost:3001';
 var ABA = 'cardapio', PRODUTOS = [], CARRINHO = [], USUARIO = null;
+
+// Mesa: numa instalacao de verdade o QR da mesa abre esta pagina com ?mesa=12 e
+// o cliente nao escolhe nada. O seletor existe para dar para testar as 16 mesas
+// de um laptop so.
+var MESA = Number(new URLSearchParams(location.search).get('mesa')) ||
+           Number(localStorage.getItem('appvenda-mesa')) || null;
+var MESAS = [], COMANDAS = [], COMANDA = null, FILA = [];
+
+// Espelho da configuracao do estabelecimento. A tela nao decide nada sobre
+// pagamento: ela pergunta ao servidor quais botoes existem.
+var CFG = {};
+var RELOGIO = null;
 
 var $ = function (s) { return document.querySelector(s); };
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
@@ -141,27 +156,66 @@ function pinta(){
   document.querySelectorAll('[data-aba]').forEach(function(b){
     b.className = b.getAttribute('data-aba') === ABA ? 'on' : '';
   });
+  // A cozinha se atualiza sozinha; sair da aba precisa parar o relogio, senao
+  // ele continua batendo na API no fundo pelo resto da sessao.
+  if (RELOGIO) { clearInterval(RELOGIO); RELOGIO = null; }
   if (ABA === 'cardapio') return telaCardapio();
+  if (ABA === 'cozinha')  return telaCozinha();
+  if (ABA === 'caixa')    return telaCaixa();
   if (ABA === 'admin')    return telaAdmin();
+  if (ABA === 'config')   return telaConfig();
   return telaConta();
+}
+
+// Modo de pagamento vigente, traduzido para o que a tela do cliente mostra.
+function modoPagamento(){
+  var modo = CFG['pagamento.modo'] || 'fechamento';
+  var integrado = CFG['pagamento.integrado'] === 'true';
+  return {
+    modo: modo,
+    podePagarAgora: integrado && (modo === 'antecipado' || modo === 'ambos'),
+    exigePagar: integrado && modo === 'antecipado',
+    texto: modo === 'antecipado' && integrado
+      ? 'A cozinha só recebe depois do pagamento aprovado.'
+      : (modo === 'ambos' && integrado
+        ? 'Você escolhe: pagar agora ou deixar na conta da mesa.'
+        : 'O pedido vai direto para a cozinha. A conta fica aberta e é paga no caixa.')
+  };
 }
 
 function telaCardapio(){
   var cats = {};
   PRODUTOS.forEach(function(p){ if (p.categoria) cats[p.categoria] = 1; });
+  var pg = modoPagamento();
   $('#tela').innerHTML =
-    '<div class="linha" style="grid-template-columns:1fr auto">' +
-      '<div><label for="fcat">Categoria</label><select id="fcat">' +
-        '<option value="">Todas</option>' +
-        Object.keys(cats).sort().map(function(c){
-          return '<option>' + esc(c) + '</option>'; }).join('') +
-      '</select></div>' +
-      '<div style="align-self:end"><button class="acao sec" id="recarrega">Atualizar</button></div>' +
+    '<div class="cartao">' +
+      '<div class="linha" style="grid-template-columns:auto 1fr auto;align-items:end;margin-bottom:0">' +
+        '<div><label for="fmesa">Mesa</label><select id="fmesa">' +
+          '<option value="">escolha</option>' +
+          MESAS.map(function(m){
+            return '<option value="' + m.numero + '"' + (m.numero === MESA ? ' selected' : '') + '>' +
+              'Mesa ' + m.numero + (m.comanda_id ? ' · conta aberta' : '') + '</option>';
+          }).join('') +
+        '</select></div>' +
+        '<div><label for="fcat">Categoria</label><select id="fcat">' +
+          '<option value="">Todas</option>' +
+          Object.keys(cats).sort().map(function(c){
+            return '<option>' + esc(c) + '</option>'; }).join('') +
+        '</select></div>' +
+        '<div><button class="acao sec" id="recarrega">Atualizar</button></div>' +
+      '</div>' +
+      '<div style="font-size:12.5px;color:var(--muted);margin-top:10px">' + esc(pg.texto) + '</div>' +
     '</div>' +
     '<div class="linha" style="grid-template-columns:2fr 1fr;align-items:start">' +
       '<div id="grade"></div>' +
-      '<div class="cartao carrinho"><h2>Meu pedido</h2><div id="itens"></div></div>' +
+      '<div class="cartao carrinho"><h2>Meu pedido</h2>' +
+        '<div id="msgPedido"></div><div id="itens"></div></div>' +
     '</div>';
+  $('#fmesa').onchange = function(){
+    MESA = Number(this.value) || null;
+    if (MESA) localStorage.setItem('appvenda-mesa', MESA);
+    pintaCarrinho();
+  };
   $('#fcat').onchange = function(){ carregaProdutos(this.value); };
   $('#recarrega').onclick = function(){ carregaProdutos($('#fcat').value); };
   pintaGrade();
@@ -211,13 +265,29 @@ function pintaCarrinho(){
     el.innerHTML = '<div class="vazio" style="padding:14px">Nada por aqui ainda.</div>';
     return;
   }
+  var pg = modoPagamento();
   var total = CARRINHO.reduce(function(s, i){ return s + i.preco * i.qtd; }, 0);
   el.innerHTML = CARRINHO.map(function(i){
-    return '<div class="item"><b>' + i.qtd + '×</b> ' + esc(i.nome) +
-      '<span style="color:var(--muted)">' + moeda(i.preco * i.qtd) + '</span>' +
-      '<button class="x" data-rm="' + i.id + '" title="Tirar">×</button></div>';
+    return '<div style="padding:7px 0;border-bottom:1px solid var(--line)">' +
+      '<div class="item" style="border:0;padding:0"><b>' + i.qtd + '×</b> ' + esc(i.nome) +
+        '<span style="color:var(--muted)">' + moeda(i.preco * i.qtd) + '</span>' +
+        '<button class="x" data-rm="' + i.id + '" title="Tirar">×</button></div>' +
+      // A observacao e por item e vai literal para a cozinha: e o "sem cebola"
+      // que hoje se perde entre o cliente, o garcom e o cozinheiro.
+      '<input data-obs="' + i.id + '" placeholder="observação (ex: sem cebola)" ' +
+        'value="' + esc(i.obs || '') + '" style="margin-top:5px;font-size:12.5px;padding:6px 9px">' +
+    '</div>';
   }).join('') +
-  '<div class="total"><span>Total</span><span>' + moeda(total) + '</span></div>';
+  '<div class="total"><span>Total</span><span>' + moeda(total) + '</span></div>' +
+  '<div style="margin-top:12px"><label>Seu nome</label>' +
+    '<input id="pedCliente" placeholder="só para a cozinha saber de quem é"></div>' +
+  '<div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">' +
+    (pg.exigePagar
+      ? '<button class="acao" id="bPagarEnviar">Pagar e enviar</button>'
+      : '<button class="acao" id="bEnviar">Enviar para a cozinha</button>' +
+        (pg.podePagarAgora ? '<button class="acao sec" id="bPagarEnviar">Prefiro pagar agora</button>' : '')) +
+  '</div>';
+
   el.querySelectorAll('[data-rm]').forEach(function(b){
     b.onclick = function(){
       var id = Number(b.getAttribute('data-rm'));
@@ -225,6 +295,52 @@ function pintaCarrinho(){
       pintaCarrinho();
     };
   });
+  el.querySelectorAll('[data-obs]').forEach(function(c){
+    c.oninput = function(){
+      var id = Number(c.getAttribute('data-obs'));
+      CARRINHO.forEach(function(x){ if (x.id === id) x.obs = c.value; });
+      // De proposito sem repintar: repintar a cada tecla tira o foco do campo.
+    };
+  });
+  if ($('#bEnviar'))      $('#bEnviar').onclick      = function(){ enviaPedido(false); };
+  if ($('#bPagarEnviar')) $('#bPagarEnviar').onclick = function(){ enviaPedido(true); };
+}
+
+async function enviaPedido(pagarAgora){
+  if (!MESA) return aviso('#msgPedido', 'erro', 'Escolha a mesa primeiro.');
+  var botoes = document.querySelectorAll('#itens button.acao');
+  botoes.forEach(function(b){ b.disabled = true; });
+  try {
+    var r = await api('/api/pedidos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mesa: MESA,
+        cliente: ($('#pedCliente') || {}).value || null,
+        pagar_agora: !!pagarAgora,
+        itens: CARRINHO.map(function(i){
+          return { produto_id: i.id, quantidade: i.qtd, observacao: i.obs || null };
+        })
+      })
+    });
+
+    // Pedido que espera pagamento so entra na cozinha depois desta chamada.
+    if (!r.na_cozinha) {
+      await api('/api/pagamento/pedido/' + r.pedido.id, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ forma: 'pix' })
+      });
+    }
+
+    CARRINHO = [];
+    await carregaBase();
+    pinta();
+    aviso('#msgPedido', 'ok',
+      (r.aviso ? r.aviso + ' ' : '') +
+      'Pedido na cozinha. Conta da mesa: ' + moeda(r.totais.total) + '.');
+  } catch (e) {
+    aviso('#msgPedido', 'erro', e.message);
+    botoes.forEach(function(b){ b.disabled = false; });
+  }
 }
 
 function telaAdmin(){
@@ -257,8 +373,26 @@ function pintaLista(){
       '<span class="cat">' + esc(p.categoria || '-') + '</span>' +
       '<span style="color:var(--muted)">' + moeda(p.precoproduto) + ' · ' +
         p.quantidadeproduto + ' un.</span>' +
+      // Disponibilidade e o controle de estoque do modo desligado -- e o atalho
+      // para tirar do ar o prato que acabou, com o estoque ligado ou nao.
+      '<button class="acao sec" data-disp="' + p.idnomeproduto + ':' + (p.disponivel ? '0' : '1') + '" ' +
+        'style="margin-left:auto;padding:5px 11px;font-size:12.5px' +
+        (p.disponivel ? '' : ';color:var(--vermelho)') + '">' +
+        (p.disponivel ? 'Disponível' : 'Indisponível') + '</button>' +
       '<button class="x" data-del="' + p.idnomeproduto + '" title="Excluir">×</button></div>';
   }).join('');
+  el.querySelectorAll('[data-disp]').forEach(function(b){
+    b.onclick = async function(){
+      var p = b.getAttribute('data-disp').split(':');
+      try {
+        await api('/produtos/' + p[0] + '/disponibilidade', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ disponivel: p[1] === '1' })
+        });
+        await carregaProdutos();
+      } catch (e) { aviso('#msgProd', 'erro', e.message); }
+    };
+  });
   el.querySelectorAll('[data-del]').forEach(function(b){
     b.onclick = async function(){
       if (!confirm('Excluir este produto?')) return;
@@ -292,6 +426,280 @@ async function cadastraProduto(){
   } finally {
     b.disabled = false; b.textContent = 'Cadastrar';
   }
+}
+
+// ---------------------------------------------------------------- cozinha
+function telaCozinha(){
+  $('#tela').innerHTML =
+    '<div class="cartao" style="display:flex;align-items:center;gap:12px">' +
+      '<h2 style="margin:0">Fila de produção</h2>' +
+      '<span style="color:var(--muted);font-size:13px" id="cozResumo"></span>' +
+      '<button class="acao sec" id="cozAtualiza" style="margin-left:auto">Atualizar</button>' +
+    '</div><div id="colunas"></div>';
+  $('#cozAtualiza').onclick = carregaFila;
+  carregaFila();
+  // A cozinha nao e clicada para atualizar: a tela fica numa TV, de longe.
+  RELOGIO = setInterval(carregaFila, 10000);
+}
+
+async function carregaFila(){
+  try { FILA = await api('/api/cozinha'); } catch (e) { FILA = []; }
+  var col = $('#colunas');
+  if (!col) return;
+  var grupos = [
+    { nome: 'Novos', status: 'novo', acao: 'preparo', rotulo: 'Iniciar preparo' },
+    { nome: 'Em preparo', status: 'preparo', acao: 'pronto', rotulo: 'Marcar pronto' },
+    { nome: 'Prontos', status: 'pronto', acao: 'entregue', rotulo: 'Entregue' }
+  ];
+  if ($('#cozResumo')) $('#cozResumo').textContent = FILA.length + ' na fila';
+
+  col.innerHTML = '<div class="linha" style="grid-template-columns:repeat(3,1fr);align-items:start">' +
+    grupos.map(function(g){
+      var cards = FILA.filter(function(p){ return p.status === g.status; });
+      return '<div><h2 style="font-size:14px;margin:0 0 10px">' + g.nome +
+        ' <span style="color:var(--muted)">' + cards.length + '</span></h2>' +
+        (cards.length ? cards.map(function(p){
+          // Mais de 20 minutos na fila fica em vermelho: e o unico alarme da tela.
+          var atrasado = p.segundos_na_fila > 1200;
+          return '<div class="cartao" style="padding:13px;margin-bottom:10px' +
+            (atrasado ? ';border-color:var(--vermelho)' : '') + '">' +
+            '<div style="display:flex;align-items:baseline;gap:8px">' +
+              '<b style="font-size:17px">Mesa ' + p.mesa + '</b>' +
+              '<span style="color:var(--muted);font-size:12px">#' + p.id + '</span>' +
+              '<span style="margin-left:auto;font-weight:700' +
+                (atrasado ? ';color:var(--vermelho)' : '') + '">' +
+                Math.floor((p.segundos_na_fila || 0) / 60) + ' min</span>' +
+            '</div>' +
+            p.itens.map(function(i){
+              return '<div style="margin-top:7px"><b>' + i.quantidade + '×</b> ' + esc(i.nome) +
+                (i.observacao
+                  ? '<div style="font-size:12.5px;color:var(--amarelo)">' + esc(i.observacao) + '</div>'
+                  : '') + '</div>';
+            }).join('') +
+            (p.cliente ? '<div style="font-size:12px;color:var(--muted);margin-top:7px">' +
+              esc(p.cliente) + '</div>' : '') +
+            '<button class="acao" data-etapa="' + p.id + ':' + g.acao + '" ' +
+              'style="width:100%;margin-top:10px">' + g.rotulo + '</button>' +
+          '</div>';
+        }).join('') : '<div class="vazio" style="padding:16px">—</div>') +
+      '</div>';
+    }).join('') + '</div>';
+
+  col.querySelectorAll('[data-etapa]').forEach(function(b){
+    b.onclick = async function(){
+      var p = b.getAttribute('data-etapa').split(':');
+      b.disabled = true;
+      try { await api('/api/pedidos/' + p[0] + '/' + p[1], { method: 'POST' }); }
+      catch (e) { alert(e.message); }
+      carregaFila();
+    };
+  });
+}
+
+// ------------------------------------------------------------------ caixa
+function telaCaixa(){
+  $('#tela').innerHTML =
+    '<div class="linha" style="grid-template-columns:260px 1fr;align-items:start">' +
+      '<div class="cartao"><h2>Comandas abertas</h2><div id="listaComandas"></div></div>' +
+      '<div id="detalheComanda"></div>' +
+    '</div>';
+  carregaComandas();
+}
+
+async function carregaComandas(){
+  try { COMANDAS = await api('/api/comandas?status=aberta'); } catch (e) { COMANDAS = []; }
+  var el = $('#listaComandas');
+  if (!el) return;
+  el.innerHTML = COMANDAS.length ? COMANDAS.map(function(c){
+    return '<div class="item" style="cursor:pointer" data-cmd="' + c.id + '">' +
+      '<b>Mesa ' + c.mesa + '</b>' +
+      '<span style="margin-left:auto;font-weight:700">' + moeda(c.totais.total) + '</span></div>';
+  }).join('') : '<div class="vazio" style="padding:14px">Nenhuma conta aberta.</div>';
+  el.querySelectorAll('[data-cmd]').forEach(function(d){
+    d.onclick = function(){ abreComanda(Number(d.getAttribute('data-cmd'))); };
+  });
+  if (COMANDA) abreComanda(COMANDA);
+}
+
+async function abreComanda(id){
+  COMANDA = id;
+  var d;
+  try { d = await api('/api/comandas/' + id); }
+  catch (e) { return aviso('#detalheComanda', 'erro', e.message); }
+
+  var el = $('#detalheComanda');
+  if (!el) return;
+  var itens = [];
+  d.pedidos.forEach(function(p){
+    if (p.status === 'cancelado') return;
+    p.itens.forEach(function(i){ itens.push(i); });
+  });
+
+  el.innerHTML =
+    '<div class="cartao"><h2>Mesa ' + d.comanda.mesa + '</h2>' +
+      '<div id="msgCaixa"></div>' +
+      (itens.length ? itens.map(function(i){
+        return '<div class="item"><b>' + i.quantidade + '×</b> ' + esc(i.nome) +
+          (i.observacao ? '<span style="color:var(--muted);font-size:12px">' +
+            esc(i.observacao) + '</span>' : '') +
+          '<span style="margin-left:auto">' + moeda(i.preco * i.quantidade) + '</span></div>';
+      }).join('') : '<div class="vazio" style="padding:12px">Sem consumo.</div>') +
+      '<div class="linha" style="margin-top:14px">' +
+        '<div><label>Serviço 10%</label>' +
+          '<select id="cxServico">' +
+            '<option value="1"' + (d.comanda.servico ? ' selected' : '') + '>Cobrar</option>' +
+            '<option value="0"' + (d.comanda.servico ? '' : ' selected') + '>Não cobrar</option>' +
+          '</select></div>' +
+        '<div><label>Desconto</label>' +
+          '<input id="cxDesconto" type="number" step="0.01" min="0" value="' +
+            Number(d.comanda.desconto) + '"></div>' +
+      '</div>' +
+      '<div class="total"><span>Consumo</span><span>' + moeda(d.totais.consumo) + '</span></div>' +
+      '<div class="item"><span>Serviço</span><span style="margin-left:auto">' +
+        moeda(d.totais.servico) + '</span></div>' +
+      '<div class="item"><span>Já pago</span><span style="margin-left:auto">' +
+        moeda(d.totais.pago) + '</span></div>' +
+      '<div class="total"><span>Falta</span><span>' + moeda(d.totais.saldo) + '</span></div>' +
+    '</div>' +
+    '<div class="cartao"><h2>Receber</h2>' +
+      '<div class="linha">' +
+        '<div><label>Forma</label><select id="cxForma">' +
+          '<option value="dinheiro">Dinheiro</option>' +
+          '<option value="cartao_maquina">Cartão na maquininha</option>' +
+          '<option value="pix_chave">Pix na chave da casa</option>' +
+        '</select></div>' +
+        '<div><label>Valor</label><input id="cxValor" type="number" step="0.01" min="0" value="' +
+          d.totais.saldo + '"></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:9px">' +
+        '<button class="acao" id="cxReceber">Receber</button>' +
+        '<button class="acao sec" id="cxFechar">Fechar mesa</button>' +
+      '</div>' +
+      '<div style="font-size:12.5px;color:var(--muted);margin-top:10px">' +
+        'Dinheiro, maquininha e Pix na chave funcionam com o módulo de pagamento desligado.</div>' +
+    '</div>';
+
+  $('#cxServico').onchange = $('#cxDesconto').onchange = async function(){
+    try {
+      await api('/api/comandas/' + id, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          servico: $('#cxServico').value === '1',
+          desconto: Number($('#cxDesconto').value || 0)
+        })
+      });
+      abreComanda(id);
+    } catch (e) { aviso('#msgCaixa', 'erro', e.message); }
+  };
+  $('#cxReceber').onclick = async function(){
+    try {
+      await api('/api/comandas/' + id + '/pagamentos', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ forma: $('#cxForma').value, valor: Number($('#cxValor').value) })
+      });
+      abreComanda(id);
+    } catch (e) { aviso('#msgCaixa', 'erro', e.message); }
+  };
+  $('#cxFechar').onclick = async function(){
+    try {
+      await api('/api/comandas/' + id + '/fechar', { method: 'POST' });
+      COMANDA = null;
+      $('#detalheComanda').innerHTML = '<div class="cartao"><div class="aviso ok">Mesa fechada.</div></div>';
+      await carregaBase();
+      carregaComandas();
+    } catch (e) { aviso('#msgCaixa', 'erro', e.message); }
+  };
+}
+
+// ------------------------------------------------------------- modulos
+function telaConfig(){
+  function opc(chave, valores, rotulos){
+    return '<select id="cfg_' + chave.replace('.', '_') + '" data-chave="' + chave + '">' +
+      valores.map(function(v, n){
+        return '<option value="' + v + '"' + (CFG[chave] === v ? ' selected' : '') + '>' +
+          rotulos[n] + '</option>';
+      }).join('') + '</select>';
+  }
+
+  $('#tela').innerHTML =
+    '<div class="cartao"><h2>Módulos do estabelecimento</h2>' +
+      '<div id="msgCfg"></div>' +
+      '<p style="color:var(--muted);font-size:13px;margin-top:0">' +
+        'O fluxo QR → pedido → cozinha → comanda → caixa funciona com tudo desligado. ' +
+        'Nada aqui muda o caminho do pedido, só quem entra nele.</p>' +
+      '<div class="linha">' +
+        '<div><label>Quando o cliente paga</label>' +
+          opc('pagamento.modo', ['fechamento', 'antecipado', 'ambos'],
+              ['No fechamento (padrão)', 'Antecipado por pedido', 'Permitir os dois']) + '</div>' +
+        '<div><label>Pagamento integrado (Pix/cartão no app)</label>' +
+          opc('pagamento.integrado', ['false', 'true'], ['Desligado', 'Ligado']) + '</div>' +
+      '</div>' +
+      '<div class="linha">' +
+        '<div><label>Controle de estoque</label>' +
+          opc('estoque.modo', ['desligado', 'simples', 'ingrediente'],
+              ['Desligado (só disponível/indisponível)', 'Simples (unidades do prato)',
+               'Por ingrediente (ficha técnica)']) + '</div>' +
+        '<div><label>Relatórios financeiros</label>' +
+          opc('financeiro.ativo', ['true', 'false'], ['Ligados', 'Desligados']) + '</div>' +
+      '</div>' +
+      '<div class="linha"><div><label>Serviço (%)</label>' +
+        '<input id="cfg_servico" type="number" min="0" max="100" value="' +
+        (CFG['servico.percentual'] || '10') + '"></div><div></div></div>' +
+      '<button class="acao" id="cfgSalvar">Salvar</button>' +
+    '</div>' +
+    '<div class="cartao"><h2>Mesas</h2>' +
+      '<div id="msgMesa"></div>' +
+      '<div style="margin-bottom:12px">' + (MESAS.length
+        ? MESAS.map(function(m){ return '<span class="cat" style="margin-right:6px">' +
+            m.numero + (m.comanda_id ? ' · aberta' : '') + '</span>'; }).join('')
+        : '<span style="color:var(--muted)">Nenhuma mesa ainda. O QR precisa de uma.</span>') + '</div>' +
+      '<div class="linha" style="grid-template-columns:140px auto;align-items:end;margin-bottom:0">' +
+        '<div><label>Número</label><input id="mNumero" type="number" min="1"></div>' +
+        '<div><button class="acao" id="mCriar">Criar mesa</button></div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="cartao"><h2>Como fica o fluxo</h2>' +
+      '<div style="line-height:2">' +
+        '1 · QR da mesa<br>2 · Pedido confirmado<br>' +
+        '3 · Cozinha <span style="color:var(--muted)">(' +
+          (modoPagamento().exigePagar ? 'entra após o pagamento aprovado' : 'entra na confirmação') +
+        ')</span><br>' +
+        '4 · Comanda aberta<br>5 · Caixa e fechamento' +
+      '</div>' +
+      '<div style="margin-top:14px;font-size:13px;color:var(--muted)">' +
+        'Pagamento integrado: ' + (CFG['pagamento.integrado'] === 'true' ? 'ligado' : 'fora do caminho') + '<br>' +
+        'Estoque: ' + (CFG['estoque.modo'] === 'desligado' ? 'fora do caminho' : CFG['estoque.modo']) + '<br>' +
+        'Financeiro: ' + (CFG['financeiro.ativo'] === 'true' ? 'lê, não bloqueia' : 'desligado') +
+      '</div>' +
+    '</div>';
+
+  $('#mCriar').onclick = async function(){
+    try {
+      await api('/api/mesas', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ numero: Number($('#mNumero').value) })
+      });
+      await carregaBase();
+      pinta();
+    } catch (e) { aviso('#msgMesa', 'erro', e.message); }
+  };
+
+  $('#cfgSalvar').onclick = async function(){
+    var corpo = { 'servico.percentual': $('#cfg_servico').value };
+    document.querySelectorAll('[data-chave]').forEach(function(s){
+      corpo[s.getAttribute('data-chave')] = s.value;
+    });
+    try {
+      CFG = await api('/api/configuracoes', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(corpo)
+      });
+      pinta();
+      aviso('#msgCfg', 'ok', 'Salvo. Vale para o próximo pedido, sem reiniciar nada.');
+    } catch (e) {
+      aviso('#msgCfg', 'erro', e.message);
+    }
+  };
 }
 
 function telaConta(){
@@ -348,11 +756,21 @@ async function carregaProdutos(categoria){
   pintaLista();
 }
 
+// Configuracao e mesas: o resto da tela depende das duas, entao carregam juntas.
+// Falha de qualquer uma cai no padrao em vez de deixar a pagina em branco.
+async function carregaBase(){
+  try { CFG = await api('/api/configuracoes'); }
+  catch (e) { CFG = { 'pagamento.modo': 'fechamento', 'pagamento.integrado': 'false',
+                      'estoque.modo': 'desligado', 'financeiro.ativo': 'true',
+                      'servico.percentual': '10' }; }
+  try { MESAS = await api('/api/mesas'); } catch (e) { MESAS = []; }
+}
+
 $('#apiUrl').value = API;
 $('#apiUrl').onchange = async function(){
   API = this.value.replace(/\/+$/, '');
   localStorage.setItem('appvenda-api', API);
-  if (await pingApi()) await carregaProdutos();
+  if (await pingApi()) { await carregaBase(); await carregaProdutos(); }
   pinta();
 };
 document.querySelectorAll('[data-aba]').forEach(function(b){
@@ -361,7 +779,7 @@ document.querySelectorAll('[data-aba]').forEach(function(b){
 
 (async function(){
   pinta();
-  if (await pingApi()) await carregaProdutos();
+  if (await pingApi()) { await carregaBase(); await carregaProdutos(); }
   pinta();
 })();
 </script>

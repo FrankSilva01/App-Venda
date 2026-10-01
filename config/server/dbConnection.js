@@ -43,4 +43,24 @@ function query(sql, valores, cb) {
     });
 }
 
-module.exports = { pool, query };
+// Transacao. Um pedido e o pedido + seus itens: gravar metade e falhar deixaria
+// comanda com pedido fantasma de total zero. O cliente recebe a conexao e usa
+// cliente.query normalmente; COMMIT e ROLLBACK ficam por conta daqui.
+async function transacao(fn) {
+  const cliente = await pool.connect();
+  try {
+    await cliente.query('BEGIN');
+    const r = await fn(cliente);
+    await cliente.query('COMMIT');
+    return r;
+  } catch (e) {
+    await cliente.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    // Sem release a conexao nunca volta para o pool e, depois de 10 pedidos com
+    // erro, a API inteira trava esperando conexao livre.
+    cliente.release();
+  }
+}
+
+module.exports = { pool, query, transacao };
