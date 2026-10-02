@@ -936,8 +936,173 @@ function mostraQr(mesa, svg, url) {
 
 // ---------------------------------------------------------- relatórios
 async function telaRelatorios() {
+  var aba = telaRelatorios.aba || 'resumo';
+  $('#tela').innerHTML =
+    '<div class="filtros">' +
+      [['resumo', 'Resumo do dia'], ['auditoria', 'Histórico']].map(function (a) {
+        return '<button data-ar="' + a[0] + '"' + (a[0] === aba ? ' class="on"' : '') + '>' +
+          a[1] + '</button>';
+      }).join('') +
+    '</div><div id="abaRel"></div>';
+  $$('[data-ar]').forEach(function (b) {
+    b.onclick = function () { telaRelatorios.aba = b.getAttribute('data-ar'); telaRelatorios(); };
+  });
+  return aba === 'auditoria' ? abaAuditoria() : abaResumo();
+}
+
+// Quem fez o quê, em que mesa, a que horas.
+//
+// O histórico por comanda, na gaveta do Salão, só existe enquanto a mesa está
+// aberta -- e a pergunta é sempre depois que fechou. Esta tela é o lugar onde
+// o registro vira consulta.
+async function abaAuditoria() {
+  var f = abaAuditoria.filtro || {};
+  // 'en-CA' dá AAAA-MM-DD no fuso DESTE navegador. `toISOString()` daria o dia
+  // em UTC, e à noite isso aponta para amanhã: o filtro abriria vazio bem na
+  // hora do movimento.
+  var hoje = new Date().toLocaleDateString('en-CA');
+  if (!f.de) f.de = hoje;
+  if (!f.ate) f.ate = hoje;
+  abaAuditoria.filtro = f;
+
+  var q = '?de=' + f.de + '&ate=' + f.ate +
+    (f.usuario ? '&usuario=' + f.usuario : '') +
+    (f.mesa ? '&mesa=' + encodeURIComponent(f.mesa) : '') +
+    (f.evento ? '&evento=' + encodeURIComponent(f.evento) : '');
+
+  var d;
+  try { d = await api('/api/auditoria' + q); }
+  catch (e) { return aviso('#abaRel', 'erro', e.message); }
+
+  // O banco guarda o nome técnico do evento; a tela mostra o que aconteceu.
+  var FRASES = {
+    'comanda:aberta': 'abriu a conta da mesa',
+    'pedido:criado': 'registrou um pedido',
+    'pedido:liberado': 'pedido entrou na cozinha',
+    'pedido:preparo': 'iniciou o preparo',
+    'pedido:pronto': 'marcou como pronto',
+    'pedido:entregue': 'entregou na mesa',
+    'pedido:cancelado': 'cancelou o pedido',
+    'chamado:atendimento': 'cliente chamou o garçom',
+    'chamado:fechamento': 'cliente pediu a conta',
+    'chamado:assumido': 'assumiu o chamado',
+    'chamado:resolvido': 'atendeu o chamado',
+    pagamento: 'recebeu pagamento',
+    'comanda:fechada': 'encerrou a mesa',
+  };
+  // Linha sem funcionário: dizer o que ela É, não o que parece.
+  //
+  // "Chamar o garçom" e "pedir a conta" são do cliente. Mas ASSUMIR e ATENDER o
+  // chamado são ações de funcionário -- se vierem sem nome, é registro faltando
+  // (acontece com o que foi gravado antes de a autoria passar a ser salva), e
+  // chamar isso de "cliente" seria atribuir a ação a quem não a fez. Numa tela
+  // de autoria, esse é o erro que não pode acontecer.
+  var DO_CLIENTE = ['chamado:atendimento', 'chamado:fechamento'];
+  function autorAusente(l) {
+    if (l.origem === 'qr' || DO_CLIENTE.indexOf(l.evento) >= 0) {
+      return '<span class="chip azul">cliente</span>';
+    }
+    if (l.evento === 'pedido:liberado' || l.evento === 'comanda:aberta') {
+      return '<span class="chip">automático</span>';
+    }
+    return '<span class="chip laranja" title="Registrado antes de o sistema ' +
+      'guardar a autoria">não registrado</span>';
+  }
+
+  function detalhe(l) {
+    var x = l.detalhe || {};
+    if (l.evento === 'pagamento') {
+      return moeda(x.valor) + ' em ' + String(x.forma || '').replace(/_/g, ' ');
+    }
+    if (l.evento === 'comanda:fechada') return 'total ' + moeda(x.total);
+    if (l.evento === 'pedido:cancelado') return x.motivo || '';
+    if (l.evento === 'pedido:criado') {
+      return (x.itens ? x.itens + ' item(ns)' : '') + (x.cliente ? ' · ' + x.cliente : '');
+    }
+    return '';
+  }
+
+  $('#abaRel').innerHTML =
+    '<div class="cartao"><div class="linha">' +
+      '<div><label>De</label><input type="date" id="fDe" value="' + f.de + '"></div>' +
+      '<div><label>Até</label><input type="date" id="fAte" value="' + f.ate + '"></div>' +
+      '<div><label>Funcionário</label><select id="fUser"><option value="">Todos</option>' +
+        d.pessoas.map(function (p) {
+          return '<option value="' + p.id + '"' + (String(f.usuario) === String(p.id) ? ' selected' : '') +
+            '>' + esc(p.nome) + ' (' + p.perfil + ')</option>';
+        }).join('') + '</select></div>' +
+      '<div><label>Mesa</label><input id="fMesa" type="number" min="1" value="' +
+        (f.mesa || '') + '" placeholder="todas"></div>' +
+      '<div><label>Tipo</label><select id="fEvento">' +
+        [['', 'Tudo'], ['pedido', 'Pedidos'], ['chamado', 'Chamados'],
+         ['pagamento', 'Pagamentos'], ['comanda', 'Abertura e fechamento']].map(function (o) {
+          return '<option value="' + o[0] + '"' + (f.evento === o[0] ? ' selected' : '') + '>' +
+            o[1] + '</option>';
+        }).join('') + '</select></div>' +
+    '</div></div>' +
+    '<div class="cartao"><div class="entre" style="margin-bottom:10px">' +
+      '<h2>' + d.eventos.length + ' evento(s)</h2>' +
+      '<button class="btn sec pequeno empurra" id="csv">Exportar CSV</button></div>' +
+      (d.eventos.length
+        ? '<div class="rolagem"><table class="tabela"><thead><tr>' +
+            '<th>Quando</th><th>Quem</th><th>O que fez</th><th>Mesa</th><th>Detalhe</th>' +
+          '</tr></thead><tbody>' +
+          d.eventos.map(function (l) {
+            var dt = new Date(l.criado_em);
+            return '<tr>' +
+              '<td style="white-space:nowrap">' + dt.toLocaleDateString('pt-BR') + '<br>' +
+                '<span class="nota">' + dt.toLocaleTimeString('pt-BR') + '</span></td>' +
+              '<td>' + (l.quem
+                ? '<b>' + esc(l.quem) + '</b><br><span class="chip">' + esc(l.perfil) + '</span>'
+                : autorAusente(l)) + '</td>' +
+              '<td>' + esc(FRASES[l.evento] || l.evento) + '</td>' +
+              '<td>' + (l.mesa ? 'Mesa ' + l.mesa : '—') + '</td>' +
+              '<td class="nota">' + esc(detalhe(l)) + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody></table></div>' +
+          (d.eventos.length >= d.limite
+            ? '<p class="nota">Mostrando os ' + d.limite + ' mais recentes do período. ' +
+              'Reduza o intervalo para ver o resto.</p>' : '')
+        : '<div class="vazio">Nada registrado com esses filtros.</div>') +
+    '</div>';
+
+  function aplica() {
+    abaAuditoria.filtro = {
+      de: $('#fDe').value, ate: $('#fAte').value, usuario: $('#fUser').value,
+      mesa: $('#fMesa').value, evento: $('#fEvento').value,
+    };
+    abaAuditoria();
+  }
+  ['#fDe', '#fAte', '#fUser', '#fEvento'].forEach(function (s) { $(s).onchange = aplica; });
+  $('#fMesa').onchange = aplica;
+
+  $('#csv').onclick = function () {
+    // Sem biblioteca: o navegador monta o arquivo. Ponto-e-vírgula porque é o
+    // que o Excel em português espera como separador.
+    var linhas = [['data', 'hora', 'quem', 'perfil', 'acao', 'mesa', 'detalhe']].concat(
+      d.eventos.map(function (l) {
+        var dt = new Date(l.criado_em);
+        var autor = l.quem ||
+          (l.origem === 'qr' || DO_CLIENTE.indexOf(l.evento) >= 0 ? 'cliente'
+            : (l.evento === 'pedido:liberado' || l.evento === 'comanda:aberta'
+              ? 'automático' : 'não registrado'));
+        return [dt.toLocaleDateString('pt-BR'), dt.toLocaleTimeString('pt-BR'),
+                autor, l.perfil || '',
+                FRASES[l.evento] || l.evento, l.mesa || '', detalhe(l)];
+      }));
+    var csv = '﻿' + linhas.map(function (c) {
+      return c.map(function (v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(';');
+    }).join('\n');
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = 'historico-' + f.de + '-a-' + f.ate + '.csv';
+    a.click();
+  };
+}
+
+async function abaResumo() {
   if (CFG['financeiro.ativo'] !== 'true') {
-    return $('#tela').innerHTML = '<div class="cartao"><div class="vazio">' +
+    return $('#abaRel').innerHTML = '<div class="cartao"><div class="vazio">' +
       'O módulo de relatórios está desligado em Configurações.</div></div>';
   }
   var r, formas, top, horas;
@@ -946,13 +1111,11 @@ async function telaRelatorios() {
     formas = await api('/api/financeiro/formas');
     top = await api('/api/financeiro/mais-vendidos');
     horas = await api('/api/financeiro/por-hora');
-  } catch (e) { return aviso('#tela', 'erro', e.message); }
+  } catch (e) { return aviso('#abaRel', 'erro', e.message); }
 
-  var cancelados = await api('/api/financeiro/transacoes').then(function () { return null; })
-    .catch(function () { return null; });
   var pico = Math.max.apply(null, horas.map(function (h) { return Number(h.bruto); }).concat([1]));
 
-  $('#tela').innerHTML =
+  $('#abaRel').innerHTML =
     '<div class="grade g4">' +
       cartaoNumero('Faturamento', moeda(r.bruto), 'hoje') +
       cartaoNumero('Pedidos', r.pedidos, r.comandas + ' mesas atendidas') +

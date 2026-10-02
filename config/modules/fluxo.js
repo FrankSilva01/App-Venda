@@ -17,6 +17,7 @@ const { query, transacao } = require('../server/dbConnection');
 const cfg = require('../server/configuracoes');
 const eventos = require('../server/eventos');
 const auditoria = require('../server/auditoria');
+const datas = require('../server/datas');
 
 const router = express.Router();
 
@@ -801,6 +802,51 @@ router.get('/comandas/:id/historico', async (req, res) => {
   try {
     res.json(await auditoria.daComanda(Number(req.params.id)));
   } catch (e) { erro(res, e, 'Erro ao carregar o histórico'); }
+});
+
+// Consulta geral da auditoria.
+//
+// O histórico por comanda só serve enquanto a mesa está aberta -- e a pergunta
+// que se faz ("quem atendeu aquela mesa ontem?", "quem fechou com desconto?")
+// é sempre depois. Esta rota é a que torna o registro consultável de fato.
+router.get('/auditoria', async (req, res) => {
+  const { de, ate, usuario, mesa, evento } = req.query;
+  const limite = Math.min(Number(req.query.limite) || 200, 500);
+
+  const j = datas.janela(de, ate);
+  const cond = [datas.sqlJanela('a.criado_em', 1)];
+  const vals = [j.inicio, j.fim, j.fuso];
+
+  if (usuario) { vals.push(Number(usuario)); cond.push('a.usuario_id = $' + vals.length); }
+  if (mesa) { vals.push(Number(mesa)); cond.push('m.numero = $' + vals.length); }
+  // Prefixo: 'pedido' pega pedido:criado, pedido:pronto e companhia. O filtro
+  // util e por assunto, nao por evento exato.
+  if (evento) { vals.push(evento + '%'); cond.push('a.evento LIKE $' + vals.length); }
+  vals.push(limite);
+
+  try {
+    const r = await query(
+      `SELECT a.id, a.criado_em, a.evento, a.origem, a.detalhe,
+              a.pedido_id, a.comanda_id,
+              m.numero AS mesa, m.area,
+              COALESCE(u.nome, u.login) AS quem, u.perfil
+         FROM auditoria a
+         LEFT JOIN usuarios u ON u.id = a.usuario_id
+         LEFT JOIN mesas m    ON m.id = a.mesa_id
+        WHERE ${cond.join(' AND ')}
+        ORDER BY a.id DESC
+        LIMIT $${vals.length}`,
+      vals
+    );
+    // A lista de funcionarios acompanha para a tela montar o filtro sem uma
+    // segunda chamada -- e sem precisar da area 'usuarios', que o gerente nao tem.
+    const pessoas = await query(
+      `SELECT DISTINCT u.id, COALESCE(u.nome, u.login) AS nome, u.perfil
+         FROM auditoria a JOIN usuarios u ON u.id = a.usuario_id
+        ORDER BY 2`
+    );
+    res.json({ eventos: r.rows, pessoas: pessoas.rows, limite });
+  } catch (e) { erro(res, e, 'Erro ao consultar o histórico'); }
 });
 
 // ----------------------------------------------------- tempo real (SSE)

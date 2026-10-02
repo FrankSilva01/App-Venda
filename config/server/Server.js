@@ -269,6 +269,9 @@ app.post('/api/pedidos', auth.identifica);
  ['/api/mesas', 'mesas'],
  ['/api/mesa', 'salao'],
  ['/api/cozinha', 'cozinha'],
+ // Auditoria é supervisão: fica com quem vê relatórios (admin e gerente), não
+ // com quem é auditado.
+ ['/api/auditoria', 'relatorios'],
  ['/api/stream', null]].forEach(([caminho, area]) => app.use(caminho, auth.exigeSessao(area)));
 
 // Mudar etapa do pedido e cancelar: basta estar logado (a cozinha avanca, o

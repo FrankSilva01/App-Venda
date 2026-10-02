@@ -9,6 +9,7 @@
 // valor e a origem classica de relatorio que nao bate com o caixa.
 const express = require('express');
 const { query } = require('../server/dbConnection');
+const datas = require('../server/datas');
 
 const router = express.Router();
 
@@ -17,29 +18,34 @@ function erro(res, e, msg) {
   res.status(500).json({ error: msg });
 }
 
-// Janela do relatorio. Sem parametro, e o dia de hoje.
+// Janela do relatorio. Sem parametro, e o dia de hoje NO FUSO DA CASA.
+//
+// A versao anterior usava o dia em UTC: no Brasil, das 21h a meia-noite o
+// "faturamento de hoje" zerava e so voltava no dia seguinte -- bem no pico do
+// jantar. Ver config/server/datas.js.
 function janela(req) {
-  const de = req.query.de || new Date().toISOString().slice(0, 10);
-  const ate = req.query.ate || de;
-  return [de, ate + ' 23:59:59.999'];
+  const j = datas.janela(req.query.de, req.query.ate);
+  return [j.inicio, j.fim, j.fuso];
 }
 
 router.get('/resumo', async (req, res) => {
-  const [de, ate] = janela(req);
+  const [de, ate, fuso] = janela(req);
   try {
     const pg = await query(
       `SELECT COALESCE(SUM(valor), 0)        AS bruto,
               COALESCE(SUM(taxa), 0)         AS taxas,
               COUNT(DISTINCT comanda_id)::int AS comandas
-         FROM pagamentos WHERE criado_em BETWEEN $1 AND $2`,
-      [de, ate]
+         FROM pagamentos WHERE criado_em >= ($1::date)::timestamp AT TIME ZONE $3
+          AND criado_em <  (($2::date) + 1)::timestamp AT TIME ZONE $3`,
+      [de, ate, fuso]
     );
     const pd = await query(
       `SELECT COUNT(*)::int AS pedidos,
               COALESCE(AVG(EXTRACT(EPOCH FROM (pronto_em - liberado_em))), 0)::int AS preparo_medio_s
          FROM pedidos
-        WHERE status <> 'cancelado' AND criado_em BETWEEN $1 AND $2`,
-      [de, ate]
+        WHERE status <> 'cancelado' AND criado_em >= ($1::date)::timestamp AT TIME ZONE $3
+          AND criado_em <  (($2::date) + 1)::timestamp AT TIME ZONE $3`,
+      [de, ate, fuso]
     );
 
     const bruto = Number(pg.rows[0].bruto);
@@ -61,58 +67,62 @@ router.get('/resumo', async (req, res) => {
 });
 
 router.get('/formas', async (req, res) => {
-  const [de, ate] = janela(req);
+  const [de, ate, fuso] = janela(req);
   try {
     const r = await query(
       `SELECT forma, origem, COUNT(*)::int AS qtd,
               SUM(valor) AS bruto, SUM(taxa) AS taxas
-         FROM pagamentos WHERE criado_em BETWEEN $1 AND $2
+         FROM pagamentos WHERE criado_em >= ($1::date)::timestamp AT TIME ZONE $3
+          AND criado_em <  (($2::date) + 1)::timestamp AT TIME ZONE $3
         GROUP BY forma, origem ORDER BY SUM(valor) DESC`,
-      [de, ate]
+      [de, ate, fuso]
     );
     res.json(r.rows);
   } catch (e) { erro(res, e, 'Erro ao somar por forma de pagamento'); }
 });
 
 router.get('/por-hora', async (req, res) => {
-  const [de, ate] = janela(req);
+  const [de, ate, fuso] = janela(req);
   try {
     const r = await query(
       `SELECT EXTRACT(HOUR FROM criado_em)::int AS hora, SUM(valor) AS bruto
-         FROM pagamentos WHERE criado_em BETWEEN $1 AND $2
+         FROM pagamentos WHERE criado_em >= ($1::date)::timestamp AT TIME ZONE $3
+          AND criado_em <  (($2::date) + 1)::timestamp AT TIME ZONE $3
         GROUP BY 1 ORDER BY 1`,
-      [de, ate]
+      [de, ate, fuso]
     );
     res.json(r.rows);
   } catch (e) { erro(res, e, 'Erro ao somar por hora'); }
 });
 
 router.get('/mais-vendidos', async (req, res) => {
-  const [de, ate] = janela(req);
+  const [de, ate, fuso] = janela(req);
   try {
     const r = await query(
       `SELECT it.nome, SUM(it.quantidade)::int AS unidades,
               SUM(it.preco * it.quantidade) AS total
          FROM pedido_itens it JOIN pedidos p ON p.id = it.pedido_id
-        WHERE p.status <> 'cancelado' AND p.criado_em BETWEEN $1 AND $2
+        WHERE p.status <> 'cancelado' AND p.criado_em >= ($1::date)::timestamp AT TIME ZONE $3
+          AND criado_em <  (($2::date) + 1)::timestamp AT TIME ZONE $3
         GROUP BY it.nome ORDER BY unidades DESC LIMIT 10`,
-      [de, ate]
+      [de, ate, fuso]
     );
     res.json(r.rows);
   } catch (e) { erro(res, e, 'Erro ao listar os mais vendidos'); }
 });
 
 router.get('/transacoes', async (req, res) => {
-  const [de, ate] = janela(req);
+  const [de, ate, fuso] = janela(req);
   try {
     const r = await query(
       `SELECT pg.*, m.numero AS mesa
          FROM pagamentos pg
          JOIN comandas c ON c.id = pg.comanda_id
          JOIN mesas m    ON m.id = c.mesa_id
-        WHERE pg.criado_em BETWEEN $1 AND $2
+        WHERE pg.criado_em >= ($1::date)::timestamp AT TIME ZONE $3
+          AND criado_em <  (($2::date) + 1)::timestamp AT TIME ZONE $3
         ORDER BY pg.criado_em DESC LIMIT 100`,
-      [de, ate]
+      [de, ate, fuso]
     );
     res.json(r.rows);
   } catch (e) { erro(res, e, 'Erro ao listar as transações'); }
